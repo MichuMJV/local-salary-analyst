@@ -1,0 +1,6 @@
+{
+  "name": "Local Salary Analyst",
+  "description": "A setup guide and code generator for running a private, local Python AI to analyze sensitive salary Excel files.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
