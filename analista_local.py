@@ -72,10 +72,16 @@ class MemoryManager:
         if os.path.exists(self.filepath):
             try:
                 with open(self.filepath, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    data = json.load(f)
+                    # Aseguramos que existan las claves globales en memorias viejas
+                    if "global_columns" not in data: data["global_columns"] = {}
+                    if "datasets" not in data: data["datasets"] = {}
+                    if "global" not in data: data["global"] = {"last_model": DEFAULT_MODEL, "recent_history": []}
+                    return data
             except Exception as e:
                 print(f"Aviso al cargar memoria: {e}")
-        return {"datasets": {}, "global": {"last_model": DEFAULT_MODEL, "recent_history": []}}
+        # Se añade 'global_columns' a la estructura por defecto
+        return {"datasets": {}, "global_columns": {}, "global": {"last_model": DEFAULT_MODEL, "recent_history": []}}
 
     def save(self):
         try:
@@ -99,6 +105,17 @@ class MemoryManager:
     def get_dataset(self, signature): return self.data.get("datasets", {}).get(signature, {})
     def update_dataset(self, signature, payload):
         self.data.setdefault("datasets", {})[signature] = payload
+        self.save()
+
+    # --- NUEVOS MÉTODOS PARA MEMORIA GLOBAL DE COLUMNAS ---
+    def get_global_column_meta(self, col_name):
+        return self.data.get("global_columns", {}).get(col_name)
+
+    def update_global_dictionary(self, definitions):
+        if "global_columns" not in self.data:
+            self.data["global_columns"] = {}
+        for col, meta in definitions.items():
+            self.data["global_columns"][col] = meta
         self.save()
 
 # =========================================================
@@ -471,9 +488,21 @@ class FinancialAssistantApp:
             temp_proc.load()
 
             mem_data = self.memory.get_dataset(temp_proc.signature)
-            old_defs = mem_data.get("column_definitions", {}) if mem_data else {}
+            specific_defs = mem_data.get("column_definitions", {}) if mem_data else {}
 
-            self.processor = ExcelProcessor(filepath, sheet, column_definitions=old_defs)
+            # --- MEZCLANDO MEMORIA ESPECÍFICA Y GLOBAL ---
+            final_defs = {}
+            for col in temp_proc.df.columns:
+                if col in specific_defs:
+                    final_defs[col] = specific_defs[col]
+                else:
+                    global_meta = self.memory.get_global_column_meta(col)
+                    if global_meta:
+                        final_defs[col] = global_meta
+                    else:
+                        final_defs[col] = {"role": "", "meaning": ""}
+
+            self.processor = ExcelProcessor(filepath, sheet, column_definitions=final_defs)
             self.processor.load()
             self.df = self.processor.df
 
@@ -492,7 +521,11 @@ class FinancialAssistantApp:
             self.processor.apply_user_definitions(dialog.result)
             payload = self.processor.build_memory_payload()
             self.memory.update_dataset(self.processor.signature, payload)
-            self.append_to_chat("Sistema", "✅ Diccionario guardado.\n\n" + self.processor.build_llm_context())
+            
+            # --- GUARDAR TAMBIÉN EN EL DICCIONARIO GLOBAL ---
+            self.memory.update_global_dictionary(dialog.result)
+            
+            self.append_to_chat("Sistema", "✅ Diccionario guardado y actualizado globalmente.\n\n" + self.processor.build_llm_context())
         else:
             self.append_to_chat("Sistema", "Carga finalizada utilizando la autodección de la herramienta.")
             
