@@ -512,37 +512,80 @@ class FinancialAssistantApp:
         threading.Thread(target=self._orchestrate_ai_workflow, daemon=True).start()
 
     def _orchestrate_ai_workflow(self):
+        print("[DEBUG] 🟢 Iniciando _orchestrate_ai_workflow (Modo Auto-Healing)...")
         try:
+            max_attempts = 6
+            attempt = 0
+            
+            print(f"[DEBUG] 🤖 Llamando a Gemma (Intento original)...")
             ai_reply = self._stream_ollama_call()
             self.history.append({"role": "assistant", "content": ai_reply})
-
-            code_blocks = re.findall(r'```python(.*?)```', ai_reply, re.DOTALL)
             
-            if code_blocks:
+            # BUCLE DE AUTO-CORRECCIÓN
+            while attempt < max_attempts:
+                code_blocks = re.findall(r'```python(.*?)```', ai_reply, re.DOTALL)
+                print(f"[DEBUG] 🧩 Bloques de código encontrados: {len(code_blocks)} (Ciclo {attempt + 1})")
+                
+                # Si no hay código, significa que solo fue charla normal o ya no quiso programar. Salimos.
+                if not code_blocks:
+                    print("[DEBUG] 🛑 No hay código para ejecutar en esta respuesta. Fin del ciclo.")
+                    break
+                
+                success = True
+                output = ""
+                fig = None
+                
                 for idx, code in enumerate(code_blocks):
-                    self.root.after(0, lambda: self.append_to_chat("Sistema", f"⚙️ Ejecutando código dinámico..."))
+                    print(f"[DEBUG] ⚡ Ejecutando bloque {idx + 1} en Sandbox...")
+                    self.root.after(0, lambda: self.append_to_chat("Sistema", f"⚙️ Ejecutando código (Intento {attempt + 1}/{max_attempts})..."))
                     
                     success, output, fig = self._run_python_sandbox(code.strip())
+                    print(f"[DEBUG] 📊 Resultado Sandbox -> Éxito: {success} | Longitud Output: {len(output)} chars")
                     
                     if fig:
+                        print("[DEBUG] 📈 Gráfico detectado. Mostrando en UI...")
                         self.root.after(0, lambda f=fig: self._show_figure(f))
                     
                     if output.strip():
                         self.root.after(0, lambda o=output: self.append_to_chat("Consola Python", o))
                     
-                    if success:
-                        prompt = f"El código se ejecutó bien. Salida:\n{output}\nExplica este resultado ejecutivo."
-                    else:
-                        prompt = f"El código falló:\n{output}\nInforma del error y corrígelo."
-                    
+                    # Si falla un bloque, rompemos el for loop para pasar al manejo de errores
+                    if not success:
+                        break
+                
+                # MANEJO DEL RESULTADO DEL CÓDIGO
+                if success:
+                    print("[DEBUG] ✅ Ejecución exitosa. Solicitando explicación final...")
+                    prompt = f"El código se ejecutó bien. Salida:\n{output}\nExplica este resultado de forma ejecutiva sin escribir código."
                     self.history.append({"role": "user", "content": prompt})
+                    
                     final_reply = self._stream_ollama_call(is_feedback=True)
                     self.history.append({"role": "assistant", "content": final_reply})
+                    break # Salimos del bucle While porque ya terminamos el trabajo
+                    
+                else:
+                    attempt += 1
+                    if attempt >= max_attempts:
+                        print(f"[DEBUG] ❌ Se alcanzó el límite de {max_attempts} intentos. Abortando.")
+                        self.root.after(0, lambda: self.append_to_chat("Sistema", "⚠️ El código falló demasiadas veces. Intenta reformular tu pregunta."))
+                        break
+                        
+                    print(f"[DEBUG] ❌ ERROR detectado. Preparando RAG Feedback para auto-corrección (Va a iniciar Intento {attempt + 1})...")
+                    prompt = f"El código falló con este error:\n{output}\nAnaliza el error, corrige tu lógica y escribe ÚNICAMENTE el bloque de código Python corregido."
+                    self.history.append({"role": "user", "content": prompt})
+                    
+                    print("[DEBUG] 🤖 Llamando a Gemma para que genere la corrección...")
+                    # Sobrescribimos ai_reply con la nueva respuesta para que el bucle While la evalúe
+                    ai_reply = self._stream_ollama_call(is_feedback=True)
+                    self.history.append({"role": "assistant", "content": ai_reply})
+                    # El bucle While vuelve a empezar aquí
 
         except Exception as e:
-            err_msg = str(e) # FIX LAMBDA SCOPE
-            self.root.after(0, lambda m=err_msg: self.append_to_chat("Error", f"Error en el flujo: {m}"))
+            print(f"[DEBUG CRÍTICO] 💥 Excepción en orchestrate: {str(e)}")
+            err_msg = str(e)
+            self.root.after(0, lambda m=err_msg: self.append_to_chat("Error", f"Error crítico en el flujo: {m}"))
         finally:
+            print("[DEBUG] 🛑 Finalizando _orchestrate_ai_workflow y liberando UI.\n")
             self.memory.set_recent_history(self.history)
             self.root.after(0, lambda: self.btn_send.config(state=tk.NORMAL, text="Enviar"))
 
