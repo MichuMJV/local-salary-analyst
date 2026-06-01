@@ -17,6 +17,11 @@ from tkinter import filedialog, scrolledtext, ttk, messagebox
 import tkinter.font as tkfont
 
 try:
+    from PIL import Image
+except Exception:
+    Image = None
+
+try:
     import plotly  # Reservado para futuras mejoras interactivas.
 except Exception:
     plotly = None
@@ -34,24 +39,24 @@ import ollama
 # =========================================================
 APP_TITLE = "COPA AI - Python Code Interpreter"
 APP_GEOMETRY = "1380x820"
-
-# La memoria queda SIEMPRE junto al .py, no en el directorio desde donde se ejecuta la terminal.
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MEMORY_FILE = os.path.join(BASE_DIR, "financial_assistant_memory.json")
-
-DEFAULT_MODEL = "gemma4:e4b"  # Modelo fijo. No se muestra selector de modelo.
+DEFAULT_MODEL = "gemma4:e4b"
 MAX_CHAT_HISTORY = 14
 MAX_SAMPLE_ROWS = 10
 MAX_CONVERSATION_MESSAGES = 300
 MAX_RECENT_CONVERSATIONS = 80
 
-# Input inferior responsive.
 INPUT_FONT = ("Segoe UI", 12)
 INPUT_MIN_LINES = 3
 INPUT_MAX_LINES = 8
 INPUT_MIN_HEIGHT = 96
-INPUT_MAX_HEIGHT = 240
+INPUT_MAX_HEIGHT = 260
+ATTACH_BAR_HEIGHT = 34
 DEBUG_PANEL_WIDTH = 360
+
+SUPPORTED_EXCEL_EXTS = {".xlsx", ".xls"}
+SUPPORTED_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
 COLORS = {
     "bg": "#0f1117",
@@ -70,6 +75,7 @@ COLORS = {
     "warning": "#f2b84b",
     "input": "#202124",
     "input_border": "#3b4252",
+    "chip": "#2a3140",
     "white": "#ffffff",
 }
 
@@ -101,7 +107,6 @@ def first_nonempty_line(text, max_len=52):
 
 
 def get_chunk_message_dict(chunk):
-    """Compatibilidad defensiva con respuestas streaming de ollama."""
     try:
         if isinstance(chunk, dict):
             return chunk.get("message", {}) or {}
@@ -122,12 +127,19 @@ def get_chunk_message_dict(chunk):
         return {}
 
 
+def classify_attachment(filepath):
+    ext = os.path.splitext(filepath)[1].lower()
+    if ext in SUPPORTED_EXCEL_EXTS:
+        return "excel"
+    if ext in SUPPORTED_IMAGE_EXTS:
+        return "image"
+    return "unknown"
+
+
 # =========================================================
 # MEMORIA LOCAL
 # =========================================================
 class MemoryManager:
-    """Memoria local estilo Gemini: conversaciones, recuerdos, datasets y diccionario global."""
-
     def __init__(self, filepath=MEMORY_FILE):
         self.filepath = filepath
         self.data = self._load()
@@ -137,11 +149,7 @@ class MemoryManager:
             "schema_version": 2,
             "datasets": {},
             "global_columns": {},
-            "global": {
-                "default_model": DEFAULT_MODEL,
-                "active_conversation_id": None,
-                "memory_notes": [],
-            },
+            "global": {"default_model": DEFAULT_MODEL, "active_conversation_id": None, "memory_notes": []},
             "conversations": {},
         }
 
@@ -165,8 +173,6 @@ class MemoryManager:
         data["global"].setdefault("memory_notes", [])
         data.setdefault("conversations", {})
 
-        # Migración segura desde memoria vieja con recent_history.
-        # No se usa self.create_conversation() aquí porque self.data aún no existe en __init__.
         old_recent = data.get("global", {}).get("recent_history", [])
         if old_recent and not data["conversations"]:
             conv_id = uuid.uuid4().hex
@@ -184,7 +190,6 @@ class MemoryManager:
         return data
 
     def save(self):
-        """Guardado atómico para proteger el JSON ante bloqueos temporales."""
         tmp_path = f"{self.filepath}.tmp"
         try:
             os.makedirs(os.path.dirname(self.filepath), exist_ok=True)
@@ -201,7 +206,6 @@ class MemoryManager:
             except Exception:
                 pass
 
-    # ---- Conversaciones ----
     def create_conversation(self, title="Nueva conversación", save_now=True):
         conv_id = uuid.uuid4().hex
         conv = {
@@ -241,20 +245,16 @@ class MemoryManager:
         convs = list(self.data.get("conversations", {}).values())
         q = normalize_text(query)
         if q:
-            convs = [
-                c for c in convs
-                if q in normalize_text(c.get("title", "")) or q in normalize_text(c.get("summary", ""))
-            ]
+            convs = [c for c in convs if q in normalize_text(c.get("title", "")) or q in normalize_text(c.get("summary", ""))]
         convs.sort(key=lambda c: (bool(c.get("pinned")), c.get("updated_at", "")), reverse=True)
         return convs[:MAX_RECENT_CONVERSATIONS]
 
-    def append_message(self, role, content, conv_id=None):
+    def append_message(self, role, content, conv_id=None, extra=None):
         conv = self.get_conversation(conv_id)
-        conv.setdefault("messages", []).append({
-            "role": role,
-            "content": content,
-            "created_at": safe_now_iso(),
-        })
+        msg = {"role": role, "content": content, "created_at": safe_now_iso()}
+        if extra:
+            msg.update(extra)
+        conv.setdefault("messages", []).append(msg)
         conv["messages"] = conv["messages"][-MAX_CONVERSATION_MESSAGES:]
         conv["updated_at"] = safe_now_iso()
         if role == "user" and (not conv.get("title") or conv.get("title") == "Nueva conversación"):
@@ -280,7 +280,6 @@ class MemoryManager:
             conv["updated_at"] = safe_now_iso()
             self.save()
 
-    # ---- Recuerdos globales ----
     def get_memory_notes(self):
         notes = self.data.get("global", {}).get("memory_notes", [])
         return [n for n in notes if isinstance(n, dict)]
@@ -294,7 +293,6 @@ class MemoryManager:
         self.data["global"]["memory_notes"] = notes[-80:]
         self.save()
 
-    # ---- Datasets / diccionario ----
     def get_dataset(self, signature):
         return self.data.get("datasets", {}).get(signature, {})
 
@@ -414,30 +412,16 @@ class SheetSelectorDialog(tk.Toplevel):
         self.transient(parent)
         self.grab_set()
 
-        tk.Label(
-            self,
-            text="El archivo tiene varias hojas.\nSelecciona la hoja a analizar:",
-            font=("Segoe UI", 11, "bold"),
-            fg=COLORS["text"],
-            bg=COLORS["bg_soft"],
-        ).pack(pady=14)
-
-        self.listbox = tk.Listbox(
-            self,
-            font=("Consolas", 11),
-            bg=COLORS["card"],
-            fg=COLORS["text"],
-            selectbackground=COLORS["accent"],
-            selectforeground="#0b1020",
-            highlightthickness=0,
-            relief=tk.FLAT,
-        )
+        tk.Label(self, text="El archivo tiene varias hojas.\nSelecciona la hoja a analizar:",
+                 font=("Segoe UI", 11, "bold"), fg=COLORS["text"], bg=COLORS["bg_soft"]).pack(pady=14)
+        self.listbox = tk.Listbox(self, font=("Consolas", 11), bg=COLORS["card"], fg=COLORS["text"],
+                                  selectbackground=COLORS["accent"], selectforeground="#0b1020",
+                                  highlightthickness=0, relief=tk.FLAT)
         self.listbox.pack(expand=True, fill=tk.BOTH, padx=16, pady=8)
         for s in sheets:
             self.listbox.insert(tk.END, s)
         if sheets:
             self.listbox.selection_set(0)
-
         btn_frame = tk.Frame(self, bg=COLORS["bg_soft"])
         btn_frame.pack(pady=14)
         tk.Button(btn_frame, text="Aceptar", command=self.on_ok, bg=COLORS["accent"], fg="#08111f",
@@ -468,14 +452,10 @@ class ColumnDefinitionDialog(tk.Toplevel):
         self.transient(parent)
         self.grab_set()
 
-        tk.Label(
-            self,
-            text=f"Configurando: {processor.filename}\nValida o completa el significado de las columnas para mejorar la precisión de la IA.",
-            bg=COLORS["bg_soft"],
-            fg=COLORS["text"],
-            font=("Segoe UI", 11, "bold"),
-            justify=tk.LEFT,
-        ).pack(anchor="w", padx=16, pady=14)
+        tk.Label(self,
+                 text=f"Configurando: {processor.filename}\nValida o completa el significado de las columnas para mejorar la precisión de la IA.",
+                 bg=COLORS["bg_soft"], fg=COLORS["text"], font=("Segoe UI", 11, "bold"), justify=tk.LEFT
+                 ).pack(anchor="w", padx=16, pady=14)
 
         container = tk.Frame(self, bg=COLORS["bg_soft"])
         container.pack(expand=True, fill=tk.BOTH, padx=14, pady=8)
@@ -540,24 +520,26 @@ class FinancialAssistantApp:
 
         self.dfs = []
         self.processors = []
+        self.pending_attachments = []
+        self.last_sent_attachments = []
         self.live_answer_started = False
         self.last_chunk = ""
         self.is_busy = False
         self.thinking_panel_visible = True
-
-        self.system_prompt_text = (
+        #####   REGLAS DE LA IA PARA ANALISIS DE DATOS Y CODIGO PYTHON   #####
+        self.system_prompt_text = ( 
             "Eres un Científico de Datos y Analista Financiero. Tienes acceso directo a una lista de DataFrames "
             "cargados en la variable `dfs`. El archivo más reciente y principal siempre está en `dfs[-1]`, "
             "y por conveniencia también está mapeado en la variable `df`.\n\n"
             "REGLAS CRÍTICAS:\n"
             "1. REVISA SIEMPRE el diccionario de datos antes de operar.\n"
             "2. Antes de operar matemáticamente verifica tipos de datos (`df.dtypes`). Si una columna numérica está como string, conviértela con `pd.to_numeric(..., errors='coerce')`.\n"
-            "3. Incluye `print()` con resultados intermedios relevantes para auditoría.\n"
+            "3. Incluye `print()` con resultados intermedios relevantes para auditoría en la consola para que luego sean revisados por ti en siguientes codigos.\n"
             "4. Para preguntas analíticas con datos cargados, genera un bloque de código Python usando pandas/matplotlib.\n"
             "5. El código debe estar estrictamente dentro de un bloque ```python y ```.\n"
-            "6. Usa `plt.show()` para gráficos.\n"
+            "6. Usa `plt.show()` para gráficos. o en su lugar si es un grafico muy completo o con varias capas usa la librería plotly de manera interactiva o para dashboards\n"
             "7. Si recibes salida de código ejecutado, explica el resultado en lenguaje ejecutivo sin volver a escribir código.\n"
-            "8. Si no hay DataFrame cargado y la pregunta no requiere datos, responde normalmente sin inventar datos."
+            "8. Si hay imágenes adjuntas, solo puedes usar metadatos/ruta/nombre; no inventes contenido visual si no se ha extraído texto/OCR."
         )
 
         self.setup_ui()
@@ -648,7 +630,6 @@ class FinancialAssistantApp:
                        activebackground=COLORS["bg"], activeforeground=COLORS["text"],
                        font=("Segoe UI", 10)).grid(row=0, column=2, sticky="e", padx=(8, 0))
 
-        # Body principal con grid: columna 0 = conversación, columna 1 = debug opcional.
         self.body = tk.Frame(self.content, bg=COLORS["bg"])
         self.body.grid(row=1, column=0, sticky="nsew", padx=24, pady=(0, 14))
         self.body.grid_rowconfigure(0, weight=1)
@@ -662,68 +643,54 @@ class FinancialAssistantApp:
         self.chat_frame.grid_columnconfigure(0, weight=1)
 
         self.chat_display = scrolledtext.ScrolledText(
-            self.chat_frame,
-            wrap=tk.WORD,
-            bg=COLORS["bg"],
-            fg=COLORS["text"],
-            insertbackground=COLORS["text"],
-            font=("Segoe UI", 11),
-            state=tk.DISABLED,
-            relief=tk.FLAT,
-            padx=14,
-            pady=14,
+            self.chat_frame, wrap=tk.WORD, bg=COLORS["bg"], fg=COLORS["text"],
+            insertbackground=COLORS["text"], font=("Segoe UI", 11), state=tk.DISABLED,
+            relief=tk.FLAT, padx=14, pady=14,
         )
         self.chat_display.grid(row=0, column=0, sticky="nsew")
 
-        # Input inferior robusto: no colapsa en pantalla completa.
+        # Input inferior con adjuntos.
         self.input_outer = tk.Frame(self.chat_frame, bg=COLORS["input_border"], height=INPUT_MIN_HEIGHT)
         self.input_outer.grid(row=1, column=0, sticky="ew", pady=(12, 0))
         self.input_outer.grid_propagate(False)
-        self.input_outer.grid_columnconfigure(0, weight=1)
+        self.input_outer.grid_columnconfigure(1, weight=1)
         self.input_outer.grid_rowconfigure(0, weight=1)
 
+        self.btn_attach = tk.Button(
+            self.input_outer, text="＋", command=self.attach_files,
+            bg=COLORS["card_light"], fg=COLORS["text"], activebackground=COLORS["sidebar_selected"],
+            activeforeground=COLORS["text"], font=("Segoe UI", 14, "bold"), width=3, relief=tk.FLAT,
+        )
+        self.btn_attach.grid(row=0, column=0, sticky="ns", padx=(1, 8), pady=1)
+
         self.input_inner = tk.Frame(self.input_outer, bg=COLORS["input"], height=INPUT_MIN_HEIGHT - 2)
-        self.input_inner.grid(row=0, column=0, sticky="nsew", padx=1, pady=1)
+        self.input_inner.grid(row=0, column=1, sticky="nsew", padx=0, pady=1)
         self.input_inner.grid_propagate(False)
         self.input_inner.grid_columnconfigure(0, weight=1)
-        self.input_inner.grid_rowconfigure(0, weight=1)
+        self.input_inner.grid_rowconfigure(1, weight=1)
+
+        self.attachments_bar = tk.Frame(self.input_inner, bg=COLORS["input"], height=0)
+        self.attachments_bar.grid(row=0, column=0, sticky="ew", padx=8, pady=(6, 0))
+        self.attachments_bar.grid_remove()
 
         self.input_box = tk.Text(
-            self.input_inner,
-            height=INPUT_MIN_LINES,
-            font=INPUT_FONT,
-            bg=COLORS["input"],
-            fg=COLORS["text"],
-            insertbackground=COLORS["text"],
-            relief=tk.FLAT,
-            borderwidth=0,
-            highlightthickness=0,
-            padx=14,
-            pady=12,
-            wrap=tk.WORD,
-            undo=True,
-            autoseparators=True,
+            self.input_inner, height=INPUT_MIN_LINES, font=INPUT_FONT, bg=COLORS["input"], fg=COLORS["text"],
+            insertbackground=COLORS["text"], relief=tk.FLAT, borderwidth=0, highlightthickness=0,
+            padx=14, pady=12, wrap=tk.WORD, undo=True, autoseparators=True,
         )
-        self.input_box.grid(row=0, column=0, sticky="nsew")
+        self.input_box.grid(row=1, column=0, sticky="nsew")
         self.input_box.bind("<Return>", self.handle_return)
         self.input_box.bind("<KeyRelease>", self._auto_resize_input_box)
         self.input_box.bind("<Configure>", self._auto_resize_input_box)
 
         self.btn_send = tk.Button(
-            self.input_outer,
-            text="Enviar",
-            command=self.send_message,
-            bg=COLORS["accent"],
-            fg="#08111f",
-            activebackground=COLORS["accent"],
-            activeforeground="#08111f",
-            font=("Segoe UI", 11, "bold"),
-            width=12,
-            relief=tk.FLAT,
+            self.input_outer, text="Enviar", command=self.send_message, bg=COLORS["accent"], fg="#08111f",
+            activebackground=COLORS["accent"], activeforeground="#08111f",
+            font=("Segoe UI", 11, "bold"), width=12, relief=tk.FLAT,
         )
-        self.btn_send.grid(row=0, column=1, sticky="ns", padx=(8, 0))
+        self.btn_send.grid(row=0, column=2, sticky="ns", padx=(8, 1), pady=1)
 
-        # Panel Thinking / Debug. Se oculta con grid_remove(), no se destruye.
+        # Panel Thinking / Debug. grid_remove() lo oculta sin destruirlo.
         self.debug_frame = tk.Frame(self.body, bg=COLORS["card"], width=DEBUG_PANEL_WIDTH)
         self.debug_frame.grid(row=0, column=1, sticky="nsew")
         self.debug_frame.grid_propagate(False)
@@ -734,22 +701,101 @@ class FinancialAssistantApp:
         debug_header.grid(row=0, column=0, sticky="ew")
         tk.Label(debug_header, text="Thinking / Debug", fg=COLORS["text"], bg=COLORS["card_light"],
                  font=("Segoe UI", 11, "bold")).pack(side=tk.LEFT, padx=12, pady=10)
-        self.lbl_thinking_status = tk.Label(debug_header, text="Inactivo", fg=COLORS["muted"], bg=COLORS["card_light"],
-                                            font=("Segoe UI", 10))
+        self.lbl_thinking_status = tk.Label(debug_header, text="Inactivo", fg=COLORS["muted"], bg=COLORS["card_light"], font=("Segoe UI", 10))
         self.lbl_thinking_status.pack(side=tk.RIGHT, padx=12)
 
         self.thinking_display = scrolledtext.ScrolledText(
-            self.debug_frame,
-            wrap=tk.WORD,
-            bg=COLORS["card"],
-            fg=COLORS["muted"],
-            font=("Consolas", 10),
-            state=tk.DISABLED,
-            relief=tk.FLAT,
-            padx=10,
-            pady=10,
+            self.debug_frame, wrap=tk.WORD, bg=COLORS["card"], fg=COLORS["muted"],
+            font=("Consolas", 10), state=tk.DISABLED, relief=tk.FLAT, padx=10, pady=10,
         )
         self.thinking_display.grid(row=1, column=0, sticky="nsew")
+
+    # =========================================================
+    # ADJUNTOS
+    # =========================================================
+    def attach_files(self):
+        filetypes = [
+            ("Archivos soportados", "*.xlsx *.xls *.png *.jpg *.jpeg *.webp *.bmp"),
+            ("Excel", "*.xlsx *.xls"),
+            ("Imágenes", "*.png *.jpg *.jpeg *.webp *.bmp"),
+            ("Todos", "*.*"),
+        ]
+        paths = filedialog.askopenfilenames(title="Adjuntar archivos", filetypes=filetypes)
+        for path in paths:
+            self._add_attachment(path)
+        self._refresh_attachments_bar()
+        self._auto_resize_input_box()
+
+    def _add_attachment(self, filepath):
+        if not filepath or not os.path.exists(filepath):
+            return
+        kind = classify_attachment(filepath)
+        if kind == "unknown":
+            self.append_to_chat("Sistema", f"⚠️ Tipo de archivo no soportado: {os.path.basename(filepath)}", persist=False)
+            return
+        # Evitar duplicados exactos pendientes.
+        if any(a.get("path") == filepath for a in self.pending_attachments):
+            return
+        meta = {
+            "id": uuid.uuid4().hex,
+            "path": filepath,
+            "name": os.path.basename(filepath),
+            "type": kind,
+            "loaded": False,
+        }
+        if kind == "image":
+            meta.update(self._image_metadata(filepath))
+        self.pending_attachments.append(meta)
+
+    def _image_metadata(self, filepath):
+        meta = {"width": None, "height": None, "format": None}
+        if Image is None:
+            return meta
+        try:
+            with Image.open(filepath) as img:
+                meta["width"], meta["height"] = img.size
+                meta["format"] = img.format
+        except Exception:
+            pass
+        return meta
+
+    def _remove_attachment(self, att_id):
+        self.pending_attachments = [a for a in self.pending_attachments if a.get("id") != att_id]
+        self._refresh_attachments_bar()
+        self._auto_resize_input_box()
+
+    def _refresh_attachments_bar(self):
+        for w in self.attachments_bar.winfo_children():
+            w.destroy()
+        if not self.pending_attachments:
+            self.attachments_bar.grid_remove()
+            return
+        self.attachments_bar.grid(row=0, column=0, sticky="ew", padx=8, pady=(6, 0))
+        for att in self.pending_attachments:
+            icon = "📊" if att["type"] == "excel" else "🖼"
+            chip = tk.Frame(self.attachments_bar, bg=COLORS["chip"], bd=0)
+            chip.pack(side=tk.LEFT, padx=(0, 6), pady=(0, 4))
+            label_text = f"{icon} {first_nonempty_line(att['name'], 28)}"
+            tk.Label(chip, text=label_text, bg=COLORS["chip"], fg=COLORS["text"], font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(8, 4), pady=4)
+            tk.Button(chip, text="×", command=lambda aid=att["id"]: self._remove_attachment(aid),
+                      bg=COLORS["chip"], fg=COLORS["muted"], activebackground=COLORS["danger"],
+                      activeforeground=COLORS["white"], relief=tk.FLAT, width=2,
+                      font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=(0, 4), pady=2)
+
+    def _attachment_summary_text(self, attachments):
+        if not attachments:
+            return ""
+        lines = ["Adjuntos enviados con este mensaje:"]
+        for att in attachments:
+            if att["type"] == "excel":
+                lines.append(f"- Excel: {att['name']} | Ruta local: {att['path']}")
+            elif att["type"] == "image":
+                dim = ""
+                if att.get("width") and att.get("height"):
+                    dim = f" | Dimensiones: {att['width']}x{att['height']}"
+                fmt = f" | Formato: {att.get('format')}" if att.get("format") else ""
+                lines.append(f"- Imagen: {att['name']} | Ruta local: {att['path']}{dim}{fmt}")
+        return "\n".join(lines)
 
     # ---- Conversaciones ----
     def refresh_recent_list(self):
@@ -774,8 +820,12 @@ class FinancialAssistantApp:
         self.memory.create_conversation(title="Nueva conversación")
         self.active_conversation = self.memory.get_conversation()
         self.history = []
+        self.pending_attachments = []
+        self.last_sent_attachments = []
         self.clear_chat_display()
-        self.append_to_chat("Sistema", "✨ Nueva conversación creada. Puedes cargar Excel o preguntar directamente.", persist=False)
+        self._refresh_attachments_bar()
+        self._auto_resize_input_box()
+        self.append_to_chat("Sistema", "✨ Nueva conversación creada. Puedes cargar Excel, adjuntar archivos o preguntar directamente.", persist=False)
         self.lbl_chat_title.config(text="Nueva conversación")
         self.refresh_recent_list()
 
@@ -785,6 +835,10 @@ class FinancialAssistantApp:
         if self.memory.set_active_conversation(conv_id):
             self.active_conversation = self.memory.get_conversation(conv_id)
             self.history = self._messages_for_llm()
+            self.pending_attachments = []
+            self.last_sent_attachments = []
+            self._refresh_attachments_bar()
+            self._auto_resize_input_box()
             self.load_active_conversation_into_chat()
             self.refresh_recent_list()
 
@@ -800,11 +854,7 @@ class FinancialAssistantApp:
 
     def _messages_for_llm(self):
         conv = self.memory.get_conversation()
-        return [
-            {"role": m.get("role"), "content": m.get("content", "")}
-            for m in conv.get("messages", [])
-            if m.get("role") in ("user", "assistant")
-        ][-MAX_CHAT_HISTORY:]
+        return [{"role": m.get("role"), "content": m.get("content", "")} for m in conv.get("messages", []) if m.get("role") in ("user", "assistant")][-MAX_CHAT_HISTORY:]
 
     def load_active_conversation_into_chat(self):
         self.clear_chat_display()
@@ -812,7 +862,7 @@ class FinancialAssistantApp:
         self.lbl_chat_title.config(text=conv.get("title", "Nueva conversación"))
         messages = conv.get("messages", [])
         if not messages:
-            self.append_to_chat("Sistema", "📊 Asistente de Finanzas iniciado. Crea análisis con Excel, conserva conversaciones y recuerda definiciones localmente.", persist=False)
+            self.append_to_chat("Sistema", "📊 Asistente de Finanzas iniciado. Puedes adjuntar Excel o imágenes desde el botón ＋ del cuadro inferior.", persist=False)
             return
         role_to_sender = {"user": "Tú", "assistant": "Gemma", "system": "Sistema", "python": "Consola Python", "error": "Error"}
         for msg in messages[-80:]:
@@ -824,41 +874,22 @@ class FinancialAssistantApp:
         self.chat_display.delete("1.0", tk.END)
         self.chat_display.config(state=tk.DISABLED)
 
-    def append_to_chat(self, sender, text, persist=False, role=None):
+    def append_to_chat(self, sender, text, persist=False, role=None, extra=None):
         self.chat_display.config(state=tk.NORMAL)
-        colors = {
-            "Tú": COLORS["accent"],
-            "Gemma": COLORS["accent_2"],
-            "Gemma (Análisis)": COLORS["accent_2"],
-            "Sistema": "#c58af9",
-            "Consola Python": COLORS["warning"],
-            "Error": COLORS["danger"],
-        }
+        colors = {"Tú": COLORS["accent"], "Gemma": COLORS["accent_2"], "Gemma (Análisis)": COLORS["accent_2"], "Sistema": "#c58af9", "Consola Python": COLORS["warning"], "Error": COLORS["danger"]}
         self.chat_display.tag_config(sender, foreground=colors.get(sender, COLORS["text"]), font=("Segoe UI", 11, "bold"))
         self.chat_display.insert(tk.END, f"{sender}\n", sender)
         self.chat_display.insert(tk.END, f"{text}\n\n")
         self.chat_display.yview(tk.END)
         self.chat_display.config(state=tk.DISABLED)
         if persist:
-            save_role = role or {
-                "Tú": "user",
-                "Gemma": "assistant",
-                "Gemma (Análisis)": "assistant",
-                "Sistema": "system",
-                "Consola Python": "python",
-                "Error": "error",
-            }.get(sender, "system")
-            self.memory.append_message(save_role, text)
+            save_role = role or {"Tú": "user", "Gemma": "assistant", "Gemma (Análisis)": "assistant", "Sistema": "system", "Consola Python": "python", "Error": "error"}.get(sender, "system")
+            self.memory.append_message(save_role, text, extra=extra)
             self.active_conversation = self.memory.get_conversation()
             self.lbl_chat_title.config(text=self.active_conversation.get("title", "Nueva conversación"))
             self.refresh_recent_list()
 
     def toggle_thinking_panel(self):
-        """Muestra/oculta Thinking / Debug sin borrar su contenido.
-
-        - Desmarcado: oculta el panel con grid_remove() y el chat gana espacio.
-        - Marcado: restaura el panel y conserva el texto anterior del debug.
-        """
         try:
             if bool(self.show_thinking_var.get()):
                 self.thinking_panel_visible = True
@@ -883,13 +914,11 @@ class FinancialAssistantApp:
         self.lbl_thinking_status.config(text=text)
 
     def handle_return(self, event):
-        # Shift+Enter inserta salto. Enter envía.
         if not event.state & 0x0001:
             self.send_message()
             return "break"
 
     def _auto_resize_input_box(self, event=None):
-        """Ajusta altura del input y la fila del grid; evita colapso visual."""
         if not hasattr(self, "input_box"):
             return
         try:
@@ -899,14 +928,12 @@ class FinancialAssistantApp:
             width_px = max(self.input_box.winfo_width() - 36, 220)
             avg_char_px = max(font.measure("0"), 7)
             chars_per_line = max(int(width_px / avg_char_px), 28)
-
             visual_lines = 1
             for paragraph in content.split("\n"):
                 visual_lines += max(1, (len(paragraph) // chars_per_line) + 1)
-
             target_lines = max(INPUT_MIN_LINES, min(INPUT_MAX_LINES, visual_lines))
-            target_height = max(INPUT_MIN_HEIGHT, min(INPUT_MAX_HEIGHT, int(target_lines * line_space + 44)))
-
+            extra_attach = ATTACH_BAR_HEIGHT if self.pending_attachments else 0
+            target_height = max(INPUT_MIN_HEIGHT + extra_attach, min(INPUT_MAX_HEIGHT + extra_attach, int(target_lines * line_space + 44 + extra_attach)))
             self.input_box.configure(height=target_lines)
             self.input_outer.configure(height=target_height)
             self.input_inner.configure(height=max(40, target_height - 2))
@@ -968,85 +995,128 @@ class FinancialAssistantApp:
 
     def _load_excel_worker(self, filepath):
         try:
-            excel_file = pd.ExcelFile(filepath)
-            sheets = excel_file.sheet_names
-            sheet = sheets[0]
-            if len(sheets) > 1:
-                dialog_result = {"done": False, "sheet": None}
-
-                def open_sheet_dialog():
-                    d = SheetSelectorDialog(self.root, sheets)
-                    self.root.wait_window(d)
-                    dialog_result["sheet"] = d.selected_sheet
-                    dialog_result["done"] = True
-
-                self.root.after(0, open_sheet_dialog)
-                while not dialog_result["done"] and self.root.winfo_exists():
-                    time.sleep(0.1)
-                sheet = dialog_result["sheet"]
-                if not sheet:
-                    self.root.after(0, self._release_ui)
-                    return
-
-            temp_proc = ExcelProcessor(filepath, sheet)
-            temp_proc.load()
-            mem_data = self.memory.get_dataset(temp_proc.signature)
-            specific_defs = mem_data.get("column_definitions", {}) if mem_data else {}
-            final_defs = {}
-            for col in temp_proc.df.columns:
-                if col in specific_defs:
-                    final_defs[col] = specific_defs[col]
-                else:
-                    global_meta = self.memory.get_global_column_meta(col)
-                    final_defs[col] = global_meta if global_meta else {"role": "", "meaning": ""}
-
-            new_processor = ExcelProcessor(filepath, sheet, column_definitions=final_defs)
-            new_processor.load()
-            self.root.after(0, lambda p=new_processor: self._open_metadata_dialog(p))
+            self._load_excel_from_path_blocking(filepath)
         except Exception as e:
             err_msg = str(e)
             self.root.after(0, lambda m=err_msg: self.append_to_chat("Error", f"Fallo al cargar: {m}", persist=True, role="error"))
+        finally:
             self.root.after(0, self._release_ui)
 
-    def _open_metadata_dialog(self, processor):
-        dialog = ColumnDefinitionDialog(self.root, processor)
-        self.root.wait_window(dialog)
-        if dialog.result:
-            processor.apply_user_definitions(dialog.result)
+    def _load_excel_from_path_blocking(self, filepath):
+        excel_file = pd.ExcelFile(filepath)
+        sheets = excel_file.sheet_names
+        sheet = sheets[0]
+        if len(sheets) > 1:
+            dialog_result = {"done": False, "sheet": None}
+            def open_sheet_dialog():
+                d = SheetSelectorDialog(self.root, sheets)
+                self.root.wait_window(d)
+                dialog_result["sheet"] = d.selected_sheet
+                dialog_result["done"] = True
+            self.root.after(0, open_sheet_dialog)
+            while not dialog_result["done"] and self.root.winfo_exists():
+                time.sleep(0.1)
+            sheet = dialog_result["sheet"]
+            if not sheet:
+                return None
+
+        temp_proc = ExcelProcessor(filepath, sheet)
+        temp_proc.load()
+        mem_data = self.memory.get_dataset(temp_proc.signature)
+        specific_defs = mem_data.get("column_definitions", {}) if mem_data else {}
+        final_defs = {}
+        for col in temp_proc.df.columns:
+            if col in specific_defs:
+                final_defs[col] = specific_defs[col]
+            else:
+                global_meta = self.memory.get_global_column_meta(col)
+                final_defs[col] = global_meta if global_meta else {"role": "", "meaning": ""}
+
+        processor = ExcelProcessor(filepath, sheet, column_definitions=final_defs)
+        processor.load()
+
+        dialog_result = {"done": False, "result": None}
+        def open_metadata_dialog():
+            d = ColumnDefinitionDialog(self.root, processor)
+            self.root.wait_window(d)
+            dialog_result["result"] = d.result
+            dialog_result["done"] = True
+        self.root.after(0, open_metadata_dialog)
+        while not dialog_result["done"] and self.root.winfo_exists():
+            time.sleep(0.1)
+
+        if dialog_result["result"]:
+            processor.apply_user_definitions(dialog_result["result"])
             self.memory.update_dataset(processor.signature, processor.build_memory_payload())
-            self.memory.update_global_dictionary(dialog.result)
+            self.memory.update_global_dictionary(dialog_result["result"])
             self.memory.remember_dataset_for_active_chat(processor.signature)
             msg = "✅ Diccionario guardado y actualizado globalmente.\n\n" + processor.build_llm_context()
         else:
             msg = "Carga finalizada utilizando la autodetección de la herramienta."
+
         self.processors.append(processor)
         self.dfs.append(processor.df)
-        self.append_to_chat("Sistema", f"{msg}\n\nArchivos cargados en esta sesión: {len(self.processors)}", persist=True, role="system")
-        self._release_ui()
+        self.root.after(0, lambda m=msg: self.append_to_chat("Sistema", f"{m}\n\nArchivos cargados en esta sesión: {len(self.processors)}", persist=True, role="system"))
+        return processor
 
     def _release_ui(self):
         self.is_busy = False
         self.btn_send.config(state=tk.NORMAL, text="Enviar")
+        self.btn_attach.config(state=tk.NORMAL)
 
     # ---- LLM + Sandbox ----
     def send_message(self):
         if self.is_busy:
             return
         user_text = self.input_box.get("1.0", tk.END).strip()
-        if not user_text:
+        if not user_text and not self.pending_attachments:
             return
+
+        attachments_to_send = list(self.pending_attachments)
+        self.last_sent_attachments = attachments_to_send
+        attach_summary = self._attachment_summary_text(attachments_to_send)
+        display_text = user_text if user_text else "Analiza los archivos adjuntos."
+        if attach_summary:
+            display_text += "\n\n" + attach_summary
+
         self.input_box.delete("1.0", tk.END)
+        self.pending_attachments = []
+        self._refresh_attachments_bar()
         self._auto_resize_input_box()
-        self.append_to_chat("Tú", user_text, persist=True, role="user")
+        self.append_to_chat("Tú", display_text, persist=True, role="user", extra={"attachments": attachments_to_send} if attachments_to_send else None)
         self.history = self._messages_for_llm()
         self.btn_send.config(state=tk.DISABLED, text="Pensando...")
+        self.btn_attach.config(state=tk.DISABLED)
         self.is_busy = True
         threading.Thread(target=self._orchestrate_ai_workflow, daemon=True).start()
+
+    def _process_last_sent_attachments(self):
+        if not self.last_sent_attachments:
+            return ""
+        image_lines = []
+        for att in self.last_sent_attachments:
+            if att.get("type") == "excel":
+                self.root.after(0, lambda n=att["name"]: self.append_to_chat("Sistema", f"📎 Procesando Excel adjunto: {n}", persist=True, role="system"))
+                self._load_excel_from_path_blocking(att["path"])
+            elif att.get("type") == "image":
+                dim = ""
+                if att.get("width") and att.get("height"):
+                    dim = f" Dimensiones: {att['width']}x{att['height']}."
+                fmt = f" Formato: {att.get('format')}." if att.get("format") else ""
+                image_lines.append(f"Imagen adjunta: {att['name']} | Ruta local: {att['path']}.{dim}{fmt}")
+        self.last_sent_attachments = []
+        if image_lines:
+            return "\n".join(image_lines)
+        return ""
 
     def _orchestrate_ai_workflow(self):
         try:
             max_attempts = 6
             attempt = 0
+            attachment_context = self._process_last_sent_attachments()
+            if attachment_context:
+                self.history.append({"role": "user", "content": "Contexto de imágenes adjuntas:\n" + attachment_context})
+
             ai_reply = self._stream_ollama_call()
             if ai_reply.strip():
                 self.memory.append_message("assistant", ai_reply)
@@ -1099,10 +1169,8 @@ class FinancialAssistantApp:
         output_buffer = io.StringIO()
         plt.clf()
         custom_show = {"called": False}
-
         def mock_show(*args, **kwargs):
             custom_show["called"] = True
-
         env = {"dfs": self.dfs, "df": self.dfs[-1], "pd": pd, "plt": plt}
         env["plt"].show = mock_show
         try:
@@ -1137,12 +1205,9 @@ class FinancialAssistantApp:
         show_think = bool(self.show_thinking_var.get())
         think_text = ""
         ans_text = ""
-
-        # Importante: ocultar/mostrar no borra. Solo limpiamos debug al inicio si el panel está visible y thinking activo.
         if show_think and self.thinking_panel_visible:
             self.root.after(0, self.clear_thinking_panel)
         self.root.after(0, lambda: self.set_thinking_status("Analizando..." if not is_feedback else "Concluyendo..."))
-
         sender = "Gemma" if not is_feedback else "Gemma (Análisis)"
         self.root.after(0, lambda s=sender: self._start_live_answer(sender=s))
         try:
