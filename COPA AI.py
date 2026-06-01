@@ -81,7 +81,7 @@ COLORS = {
 
 # =========================================================
 # UTILIDADES
-# =========================================================
+# =========================================================    
 def normalize_text(value):
     if value is None:
         return ""
@@ -798,6 +798,63 @@ class FinancialAssistantApp:
         return "\n".join(lines)
 
     # ---- Conversaciones ----
+    def rename_conversation_dialog(self, conv_id):
+        conv = self.memory.get_conversation(conv_id)
+    
+        win = tk.Toplevel(self.root)
+        win.title("Renombrar conversación")
+        win.geometry("420x160")
+        win.configure(bg=COLORS["bg_soft"])
+        win.transient(self.root)
+        win.grab_set()
+    
+        tk.Label(
+            win,
+            text="Nuevo nombre de la conversación:",
+            bg=COLORS["bg_soft"],
+            fg=COLORS["text"],
+            font=("Segoe UI", 11, "bold")
+        ).pack(anchor="w", padx=16, pady=(16, 6))
+    
+        title_var = tk.StringVar(value=conv.get("title", ""))
+    
+        entry = tk.Entry(
+            win,
+            textvariable=title_var,
+            font=("Segoe UI", 11),
+            bg=COLORS["input"],
+            fg=COLORS["text"],
+            insertbackground=COLORS["text"],
+            relief=tk.FLAT
+        )
+        entry.pack(fill=tk.X, padx=16, pady=6)
+        entry.focus()
+    
+        def save():
+            new_title = title_var.get().strip()
+            if new_title:
+                conv["title"] = new_title[:80]
+                conv["updated_at"] = safe_now_iso()
+                self.memory.save()
+                self.lbl_chat_title.config(text=new_title)
+                self.refresh_recent_list()
+            win.destroy()
+    
+        btns = tk.Frame(win, bg=COLORS["bg_soft"])
+        btns.pack(fill=tk.X, pady=14)
+    
+        tk.Button(
+            btns, text="Cancelar", command=win.destroy,
+            bg=COLORS["card_light"], fg=COLORS["text"],
+            relief=tk.FLAT, width=12
+        ).pack(side=tk.RIGHT, padx=8)
+    
+        tk.Button(
+            btns, text="Guardar", command=save,
+            bg=COLORS["accent"], fg="#08111f",
+            relief=tk.FLAT, width=12
+        ).pack(side=tk.RIGHT)
+    
     def refresh_recent_list(self):
         for w in self.recent_frame.winfo_children():
             w.destroy()
@@ -807,9 +864,28 @@ class FinancialAssistantApp:
             row = tk.Frame(self.recent_frame, bg=bg)
             row.pack(fill=tk.X, pady=1)
             title = ("📌 " if conv.get("pinned") else "") + first_nonempty_line(conv.get("title", "Nueva conversación"), 31)
-            tk.Button(row, text=title, command=lambda cid=conv["id"]: self.open_conversation(cid), bg=bg, fg=COLORS["text"],
-                      activebackground=COLORS["sidebar_hover"], activeforeground=COLORS["text"], relief=tk.FLAT, anchor="w", padx=8,
-                      font=("Segoe UI", 9), height=1).pack(side=tk.LEFT, expand=True, fill=tk.X)
+            btn = tk.Button(
+                row,
+                text=title,
+                command=lambda cid=conv["id"]: self.open_conversation(cid),
+                bg=bg,
+                fg=COLORS["text"],
+                activebackground=COLORS["sidebar_hover"],
+                activeforeground=COLORS["text"],
+                relief=tk.FLAT,
+                anchor="w",
+                padx=8,
+                font=("Segoe UI", 9),
+                height=1
+            )
+            btn.pack(side=tk.LEFT, expand=True, fill=tk.X)
+
+            # ✅ Doble click para renombrar conversación
+            btn.bind(
+                "<Double-Button-1>",
+                lambda e, cid=conv["id"]: self.rename_conversation_dialog(cid)
+            )
+
             tk.Button(row, text="×", command=lambda cid=conv["id"]: self.delete_conversation(cid), bg=bg, fg=COLORS["muted_2"],
                       activebackground=COLORS["danger"], activeforeground=COLORS["white"], relief=tk.FLAT, width=2,
                       font=("Segoe UI", 9, "bold")).pack(side=tk.RIGHT)
