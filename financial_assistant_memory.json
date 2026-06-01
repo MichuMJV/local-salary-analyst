@@ -601,60 +601,16 @@
       }
     ],
     "default_model": "gemma4:e4b",
-    "active_conversation_id": "6348bd6e86cf4cf1b2c399a14efaae2a",
+    "active_conversation_id": "b7fe2f0eac2244f5931707c3676ca20a",
     "memory_notes": []
   },
   "conversations": {
-    "608d4d7ea2ce44189e5e52f593df1d8e": {
-      "id": "608d4d7ea2ce44189e5e52f593df1d8e",
-      "title": "conversacion vieja",
-      "created_at": "2026-06-01T15:06:48",
-      "updated_at": "2026-06-01T15:17:22",
-      "messages": [
-        {
-          "role": "user",
-          "content": "hola",
-          "created_at": "2026-06-01T15:06:50"
-        },
-        {
-          "role": "assistant",
-          "content": "¡Hola! Soy tu Científico de Datos y Analista Financiero. Estoy listo para ayudarte a analizar los datos que tienes cargados en la variable `dfs`.\n\nPor favor, dime qué análisis te gustaría realizar. Recuerda que siempre revisaré la estructura de los datos, los tipos de columnas y te proporcionaré los resultados de manera clara y ejecutable.\n\n¿Con qué análisis empezamos?",
-          "created_at": "2026-06-01T15:08:26"
-        }
-      ],
-      "pinned": false,
-      "summary": "",
-      "dataset_signatures": []
-    },
-    "6348bd6e86cf4cf1b2c399a14efaae2a": {
-      "id": "6348bd6e86cf4cf1b2c399a14efaae2a",
-      "title": "prueba con una foto",
-      "created_at": "2026-06-01T15:16:23",
-      "updated_at": "2026-06-01T15:21:02",
-      "messages": [
-        {
-          "role": "user",
-          "content": "que puedes concluir viendo esta foto?\n\nAdjuntos enviados con este mensaje:\n- Imagen: newplot.png | Ruta local: C:/Users/mjaramillov/Downloads/newplot.png | Dimensiones: 1264x569 | Formato: PNG",
-          "created_at": "2026-06-01T15:16:54",
-          "attachments": [
-            {
-              "id": "1182f3ac559a44ef9cc4284e024d7796",
-              "path": "C:/Users/mjaramillov/Downloads/newplot.png",
-              "name": "newplot.png",
-              "type": "image",
-              "loaded": false,
-              "width": 1264,
-              "height": 569,
-              "format": "PNG"
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "content": "Como Científico de Datos y Analista Financiero, mi capacidad de conclusión se basa en el análisis de datos estructurados (DataFrames) o en la extracción de texto y métricas de las imágenes.\n\n**Limitación Actual:**\nEn este momento, solo tengo acceso a los metadatos de la imagen (`newplot.png`, 1264x569, PNG). No puedo \"ver\" el contenido visual del gráfico, ni extraer los datos subyacentes (ejes, leyendas, valores) sin que se me proporcione el texto o los datos en un formato analizable.\n\n**Para que pueda generar una conclusión ejecutiva, por favor, haga lo siguiente:**\n\n1. **Extraiga el texto:** Si es posible, copie y pegue los datos o las etiquetas clave del gráfico.\n2. **Describa el gráfico:** Indíqueme qué representan los ejes X e Y, qué tipo de tendencia muestra (crecimiento, declive, estacionalidad, etc.), y cuáles son los puntos de inflexión más notables.\n\nUna vez que tenga el contenido o los datos, procederé a:\n1. **Analizar la tendencia:** Identificar patrones de crecimiento, riesgo o rendimiento.\n2. **Generar conclusiones financieras:** Interpretar los hallazgos en términos de negocio o inversión.\n3. **Sugerir acciones:** Proponer los siguientes pasos analíticos o las preguntas que deben responderse con los datos.",
-          "created_at": "2026-06-01T15:21:02"
-        }
-      ],
+    "b7fe2f0eac2244f5931707c3676ca20a": {
+      "id": "b7fe2f0eac2244f5931707c3676ca20a",
+      "title": "Nueva conversación",
+      "created_at": "2026-06-01T15:37:51",
+      "updated_at": "2026-06-01T15:37:51",
+      "messages": [],
       "pinned": false,
       "summary": "",
       "dataset_signatures": []

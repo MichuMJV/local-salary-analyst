@@ -524,6 +524,7 @@ class FinancialAssistantApp:
         self.last_sent_attachments = []
         self.live_answer_started = False
         self.last_chunk = ""
+        self.cancel_event = threading.Event()
         self.is_busy = False
         self.thinking_panel_visible = True
         #####   REGLAS DE LA IA PARA ANALISIS DE DATOS Y CODIGO PYTHON   #####
@@ -702,6 +703,12 @@ class FinancialAssistantApp:
         tk.Label(debug_header, text="Thinking / Debug", fg=COLORS["text"], bg=COLORS["card_light"],
                  font=("Segoe UI", 11, "bold")).pack(side=tk.LEFT, padx=12, pady=10)
         self.lbl_thinking_status = tk.Label(debug_header, text="Inactivo", fg=COLORS["muted"], bg=COLORS["card_light"], font=("Segoe UI", 10))
+        
+        self.lbl_thinking_status.bind(
+            "<Button-1>",
+            lambda e: self.cancel_analysis()
+        )
+
         self.lbl_thinking_status.pack(side=tk.RIGHT, padx=12)
 
         self.thinking_display = scrolledtext.ScrolledText(
@@ -1136,35 +1143,89 @@ class FinancialAssistantApp:
         return processor
 
     def _release_ui(self):
-        self.is_busy = False
-        self.btn_send.config(state=tk.NORMAL, text="Enviar")
-        self.btn_attach.config(state=tk.NORMAL)
+     self.is_busy = False
+     self.cancel_event.clear()
+
+     self.btn_send.config(
+         state=tk.NORMAL,
+         text="Enviar",
+         command=self.send_message,
+         bg=COLORS["accent"],
+         fg="#08111f"
+     )
+     self.btn_attach.config(state=tk.NORMAL)
+
+        
+    def cancel_analysis(self):
+        if not self.is_busy:
+            return
+
+        self.cancel_event.set()  # 🔴 Señal global de cancelación
+
+        self.append_to_chat(
+            "Sistema",
+            "⛔ Análisis cancelado por el usuario. Puedes corregir o enviar un nuevo prompt.",
+            persist=False
+        )
+
+        self._release_ui()
+
 
     # ---- LLM + Sandbox ----
     def send_message(self):
-        if self.is_busy:
-            return
-        user_text = self.input_box.get("1.0", tk.END).strip()
-        if not user_text and not self.pending_attachments:
-            return
-
-        attachments_to_send = list(self.pending_attachments)
-        self.last_sent_attachments = attachments_to_send
-        attach_summary = self._attachment_summary_text(attachments_to_send)
-        display_text = user_text if user_text else "Analiza los archivos adjuntos."
-        if attach_summary:
-            display_text += "\n\n" + attach_summary
-
-        self.input_box.delete("1.0", tk.END)
-        self.pending_attachments = []
-        self._refresh_attachments_bar()
-        self._auto_resize_input_box()
-        self.append_to_chat("Tú", display_text, persist=True, role="user", extra={"attachments": attachments_to_send} if attachments_to_send else None)
-        self.history = self._messages_for_llm()
-        self.btn_send.config(state=tk.DISABLED, text="Pensando...")
-        self.btn_attach.config(state=tk.DISABLED)
-        self.is_busy = True
-        threading.Thread(target=self._orchestrate_ai_workflow, daemon=True).start()
+       if self.is_busy:
+           return
+    
+       user_text = self.input_box.get("1.0", tk.END).strip()
+       if not user_text and not self.pending_attachments:
+           return
+    
+       attachments_to_send = list(self.pending_attachments)
+       self.last_sent_attachments = attachments_to_send
+    
+       attach_summary = self._attachment_summary_text(attachments_to_send)
+       display_text = user_text if user_text else "Analiza los archivos adjuntos."
+       if attach_summary:
+           display_text += "\n\n" + attach_summary
+    
+       # Limpieza de input
+       self.input_box.delete("1.0", tk.END)
+       self.pending_attachments = []
+       self._refresh_attachments_bar()
+       self._auto_resize_input_box()
+    
+       # Guardar mensaje del usuario
+       self.append_to_chat(
+           "Tú",
+           display_text,
+           persist=True,
+           role="user",
+           extra={"attachments": attachments_to_send} if attachments_to_send else None
+       )
+    
+       # 🔴 Preparar cancelación
+       self.cancel_event.clear()
+       self.is_busy = True
+    
+       # ✅ BOTÓN = CANCELAR (NO se deshabilita)
+       self.btn_send.config(
+           state=tk.NORMAL,
+           text="Cancelar",
+           command=self.cancel_analysis,
+           bg=COLORS["danger"],
+           fg=COLORS["white"]
+       )
+    
+       # Otros controles sí se bloquean
+       self.btn_attach.config(state=tk.DISABLED)
+    
+       self.history = self._messages_for_llm()
+    
+       # Lanzar IA
+       threading.Thread(
+           target=self._orchestrate_ai_workflow,
+           daemon=True
+       ).start()
 
     def _process_last_sent_attachments(self):
         if not self.last_sent_attachments:
@@ -1290,6 +1351,8 @@ class FinancialAssistantApp:
             stream = ollama.chat(model=DEFAULT_MODEL, messages=messages, think=show_think, stream=True, options={"temperature": 0.1})
             update_counter = 0
             for chunk in stream:
+                if self.cancel_event.is_set():
+                    break
                 msg = get_chunk_message_dict(chunk)
                 ch_think = msg.get("thinking", "")
                 if ch_think:
