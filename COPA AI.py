@@ -1,4 +1,3 @@
-
 import os
 import re
 import io
@@ -513,7 +512,6 @@ class FinancialAssistantApp:
         self.root.geometry(APP_GEOMETRY)
         self.root.configure(bg=COLORS["bg"])
         self._fullscreen_start()
-
         self.memory = MemoryManager()
         self.active_conversation = self.memory.get_conversation()
         self.history = self._messages_for_llm()
@@ -526,6 +524,7 @@ class FinancialAssistantApp:
         self.last_chunk = ""
         self.cancel_event = threading.Event()
         self.is_busy = False
+        self.current_run_id = 0
         self.thinking_panel_visible = True
         #####   REGLAS DE LA IA PARA ANALISIS DE DATOS Y CODIGO PYTHON   #####
         self.system_prompt_text = ( 
@@ -540,9 +539,10 @@ class FinancialAssistantApp:
             "5. El código debe estar estrictamente dentro de un bloque ```python y ```.\n"
             "6. Usa `plt.show()` para gráficos. o en su lugar si es un grafico muy completo o con varias capas usa la librería plotly de manera interactiva o para dashboards\n"
             "7. Si recibes salida de código ejecutado, explica el resultado en lenguaje ejecutivo sin volver a escribir código.\n"
-            "8. Si hay imágenes adjuntas, solo puedes usar metadatos/ruta/nombre; no inventes contenido visual si no se ha extraído texto/OCR."
+            "8. Si hay imágenes o pdf adjuntos, explica que copilot puede realizar esa tarea, y que eres especificamente capaz solo de leer exceles y formatos de texto como word, excel, csv o txt"
+            "9. Puedes resolver cualquier tipo de pregunta si no está relacionada con nada de lo anterior pero aclara que tu especialidad es análisis de datos y código Python para temas financieros"
+            "10. IMPORTANTE: No tienes capacidad de procesar directamente archivos PDF ni imágenes. Si el usuario proporciona una imagen o PDF, debes indicarle claramente que no puedes analizar ese tipo de archivo en este entorno y sugerirle utilizar Microsoft Copilot u otra herramienta multimodal para ese análisis. Nunca inventes contenido visual ni asumas lo que contiene una imagen o PDF."
         )
-
         self.setup_ui()
         self.load_active_conversation_into_chat()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -737,9 +737,26 @@ class FinancialAssistantApp:
         if not filepath or not os.path.exists(filepath):
             return
         kind = classify_attachment(filepath)
-        if kind == "unknown":
-            self.append_to_chat("Sistema", f"⚠️ Tipo de archivo no soportado: {os.path.basename(filepath)}", persist=False)
+        
+        # ❌ BLOQUEAR IMÁGENES Y PDF (aunque pdf no estaba explícito antes)
+        if kind in ["image"]:
+            self.append_to_chat(
+                "Sistema",
+                "⚠️ Este asistente no puede analizar imágenes. Usa Microsoft Copilot para ese tipo de archivos.",
+                persist=False
+            )
             return
+        
+        # (opcional) bloquear PDFs directamente por extensión
+        ext = os.path.splitext(filepath)[1].lower()
+        if ext == ".pdf":
+            self.append_to_chat(
+                "Sistema",
+                "⚠️ Este asistente no puede analizar archivos PDF. Usa Microsoft Copilot para ese tipo de análisis.",
+                persist=False
+            )
+            return
+        
         # Evitar duplicados exactos pendientes.
         if any(a.get("path") == filepath for a in self.pending_attachments):
             return
@@ -861,41 +878,99 @@ class FinancialAssistantApp:
             bg=COLORS["accent"], fg="#08111f",
             relief=tk.FLAT, width=12
         ).pack(side=tk.RIGHT)
-    
+        
     def refresh_recent_list(self):
+        # Limpiar lista previa
         for w in self.recent_frame.winfo_children():
             w.destroy()
+    
         active_id = self.memory.get_active_conversation_id()
-        for conv in self.memory.list_conversations(self.search_var.get() if hasattr(self, "search_var") else ""):
+    
+        conversations = self.memory.list_conversations(
+            self.search_var.get() if hasattr(self, "search_var") else ""
+        )
+    
+        for conv in conversations:
             bg = COLORS["sidebar_selected"] if conv.get("id") == active_id else COLORS["sidebar"]
+    
             row = tk.Frame(self.recent_frame, bg=bg)
             row.pack(fill=tk.X, pady=1)
-            title = ("📌 " if conv.get("pinned") else "") + first_nonempty_line(conv.get("title", "Nueva conversación"), 31)
-            btn = tk.Button(
+    
+            title = ("📌 " if conv.get("pinned") else "") + first_nonempty_line(
+                conv.get("title", "Nueva conversación"), 31
+            )
+    
+            # ✅ TEXTO PRINCIPAL (click + doble click)
+            label = tk.Label(
                 row,
                 text=title,
-                command=lambda cid=conv["id"]: self.open_conversation(cid),
                 bg=bg,
                 fg=COLORS["text"],
-                activebackground=COLORS["sidebar_hover"],
-                activeforeground=COLORS["text"],
-                relief=tk.FLAT,
                 anchor="w",
                 padx=8,
                 font=("Segoe UI", 9),
-                height=1
+                cursor="hand2"
             )
-            btn.pack(side=tk.LEFT, expand=True, fill=tk.X)
-
-            # ✅ Doble click para renombrar conversación
-            btn.bind(
-                "<Double-Button-1>",
-                lambda e, cid=conv["id"]: self.rename_conversation_dialog(cid)
+            label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+    
+            # ------------------------------------------------
+            # ✅ CLICK SIMPLE (con delay para detectar doble click)
+            # ------------------------------------------------
+            def handle_click(event, cid=conv["id"]):
+                def open_if_not_double():
+                    if not getattr(event.widget, "_double_click", False):
+                        self.open_conversation(cid)
+                    event.widget._double_click = False
+    
+                event.widget._double_click = False
+                self.root.after(180, open_if_not_double)
+    
+            # ------------------------------------------------
+            # ✅ DOBLE CLICK → RENOMBRAR
+            # ------------------------------------------------
+            def handle_double_click(event, cid=conv["id"]):
+                event.widget._double_click = True
+                self.rename_conversation_dialog(cid)
+    
+            label.bind("<Button-1>", handle_click)
+            label.bind("<Double-Button-1>", handle_double_click)
+    
+            # ------------------------------------------------
+            # ✅ BOTÓN ELIMINAR (aislado, NO interferido)
+            # ------------------------------------------------
+            delete_btn = tk.Button(
+                row,
+                text="×",
+                command=lambda cid=conv["id"]: self.delete_conversation(cid),
+                bg=bg,
+                fg=COLORS["muted_2"],
+                activebackground=COLORS["danger"],
+                activeforeground=COLORS["white"],
+                relief=tk.FLAT,
+                width=2,
+                font=("Segoe UI", 9, "bold"),
+                cursor="hand2"
             )
+            delete_btn.pack(side=tk.RIGHT, padx=(4, 4), pady=2)
+    
+            # ------------------------------------------------
+            # ✅ HOVER EFFECT (opcional pero recomendado)
+            # ------------------------------------------------
+            def on_enter(e, w=row):
+                w.config(bg=COLORS["sidebar_hover"])
+    
+            def on_leave(e, w=row, base=bg):
+                w.config(bg=base)
+    
+            row.bind("<Enter>", on_enter)
+            row.bind("<Leave>", on_leave)
+    
+    
+  
+    def _on_conversation_double_click(self, event, conv_id):
+        self.rename_conversation_dialog(conv_id)
+        return "break"
 
-            tk.Button(row, text="×", command=lambda cid=conv["id"]: self.delete_conversation(cid), bg=bg, fg=COLORS["muted_2"],
-                      activebackground=COLORS["danger"], activeforeground=COLORS["white"], relief=tk.FLAT, width=2,
-                      font=("Segoe UI", 9, "bold")).pack(side=tk.RIGHT)
 
     def new_conversation(self):
         if self.is_busy:
@@ -1026,22 +1101,36 @@ class FinancialAssistantApp:
             pass
 
     def _start_live_answer(self, sender="Gemma"):
+        if self.cancel_event.is_set():
+            return
+
         if self.live_answer_started:
             return
+
         self.live_answer_started = True
+
         self.chat_display.config(state=tk.NORMAL)
-        self.chat_display.tag_config(sender, foreground=COLORS["accent_2"], font=("Segoe UI", 11, "bold"))
+        self.chat_display.tag_config(
+            sender,
+            foreground=COLORS["accent_2"],
+            font=("Segoe UI", 11, "bold")
+        )
         self.chat_display.insert(tk.END, f"{sender}\n", sender)
         self.chat_display.config(state=tk.DISABLED)
         self.chat_display.yview(tk.END)
 
+
     def _append_live_answer(self, chunk_text):
+        if self.cancel_event.is_set():
+            return
         self.chat_display.config(state=tk.NORMAL)
         self.chat_display.insert(tk.END, chunk_text)
         self.chat_display.yview(tk.END)
         self.chat_display.config(state=tk.DISABLED)
 
     def _finish_live_answer(self):
+        if self.cancel_event.is_set():
+            return
         self.chat_display.config(state=tk.NORMAL)
         self.chat_display.insert(tk.END, "\n\n")
         self.chat_display.config(state=tk.DISABLED)
@@ -1050,6 +1139,8 @@ class FinancialAssistantApp:
         self.last_chunk = ""
 
     def _update_live_thinking(self, text):
+        if self.cancel_event.is_set():
+            return
         self.thinking_display.config(state=tk.NORMAL)
         self.thinking_display.delete("1.0", tk.END)
         self.thinking_display.insert(tk.END, text)
@@ -1142,25 +1233,36 @@ class FinancialAssistantApp:
         self.root.after(0, lambda m=msg: self.append_to_chat("Sistema", f"{m}\n\nArchivos cargados en esta sesión: {len(self.processors)}", persist=True, role="system"))
         return processor
 
+
     def _release_ui(self):
-     self.is_busy = False
-     self.cancel_event.clear()
+        self.is_busy = False
 
-     self.btn_send.config(
-         state=tk.NORMAL,
-         text="Enviar",
-         command=self.send_message,
-         bg=COLORS["accent"],
-         fg="#08111f"
-     )
-     self.btn_attach.config(state=tk.NORMAL)
+        # ❌ NO LIMPIAR AQUÍ
+        # self.cancel_event.clear()
 
-        
+        self.btn_send.config(
+            state=tk.NORMAL,
+            text="Enviar",
+            command=self.send_message,
+            bg=COLORS["accent"],
+            fg="#08111f"
+        )
+        self.btn_attach.config(state=tk.NORMAL)
+
+
+
     def cancel_analysis(self):
         if not self.is_busy:
             return
 
-        self.cancel_event.set()  # 🔴 Señal global de cancelación
+        self.cancel_event.set()
+
+        # ✅ Cerrar cualquier respuesta en curso
+        self.root.after(0, self._force_finish_answer)
+
+        # Estado visual
+        self.root.after(0, lambda: self.set_thinking_status("Cancelado"))
+        self.root.after(0, self.clear_thinking_panel)
 
         self.append_to_chat(
             "Sistema",
@@ -1169,63 +1271,79 @@ class FinancialAssistantApp:
         )
 
         self._release_ui()
+        
+    def _force_finish_answer(self):
+        """
+        Cierra cualquier respuesta activa, incluso si fue cancelada.
+        """
+        try:
+            self.chat_display.config(state=tk.NORMAL)
+            self.chat_display.insert(tk.END, "\n\n")
+            self.chat_display.config(state=tk.DISABLED)
+            self.chat_display.yview(tk.END)
+        except:
+            pass
 
+        # ✅ Reset completo
+        self.live_answer_started = False
+        self.last_chunk = ""
 
-    # ---- LLM + Sandbox ----
     def send_message(self):
-       if self.is_busy:
-           return
+        if self.is_busy:
+            return
     
-       user_text = self.input_box.get("1.0", tk.END).strip()
-       if not user_text and not self.pending_attachments:
-           return
+        user_text = self.input_box.get("1.0", tk.END).strip()
+        if not user_text and not self.pending_attachments:
+            return
     
-       attachments_to_send = list(self.pending_attachments)
-       self.last_sent_attachments = attachments_to_send
+        attachments_to_send = list(self.pending_attachments)
+        self.last_sent_attachments = attachments_to_send
     
-       attach_summary = self._attachment_summary_text(attachments_to_send)
-       display_text = user_text if user_text else "Analiza los archivos adjuntos."
-       if attach_summary:
-           display_text += "\n\n" + attach_summary
+        attach_summary = self._attachment_summary_text(attachments_to_send)
+        display_text = user_text if user_text else "Analiza los archivos adjuntos."
+        if attach_summary:
+            display_text += "\n\n" + attach_summary
     
-       # Limpieza de input
-       self.input_box.delete("1.0", tk.END)
-       self.pending_attachments = []
-       self._refresh_attachments_bar()
-       self._auto_resize_input_box()
+        # Limpieza
+        self.input_box.delete("1.0", tk.END)
+        self.pending_attachments = []
+        self._refresh_attachments_bar()
+        self._auto_resize_input_box()
     
-       # Guardar mensaje del usuario
-       self.append_to_chat(
-           "Tú",
-           display_text,
-           persist=True,
-           role="user",
-           extra={"attachments": attachments_to_send} if attachments_to_send else None
-       )
+        # Guardar mensaje
+        self.append_to_chat(
+            "Tú",
+            display_text,
+            persist=True,
+            role="user",
+            extra={"attachments": attachments_to_send} if attachments_to_send else None
+        )
     
-       # 🔴 Preparar cancelación
-       self.cancel_event.clear()
-       self.is_busy = True
+        # ✅ NUEVO RUN
+        self.current_run_id += 1
+        run_id = self.current_run_id
     
-       # ✅ BOTÓN = CANCELAR (NO se deshabilita)
-       self.btn_send.config(
-           state=tk.NORMAL,
-           text="Cancelar",
-           command=self.cancel_analysis,
-           bg=COLORS["danger"],
-           fg=COLORS["white"]
-       )
+        self.cancel_event.clear()
+        self.is_busy = True
     
-       # Otros controles sí se bloquean
-       self.btn_attach.config(state=tk.DISABLED)
+        # Botón cancelar
+        self.btn_send.config(
+            text="Cancelar",
+            command=self.cancel_analysis,
+            bg=COLORS["danger"],
+            fg=COLORS["white"]
+        )
     
-       self.history = self._messages_for_llm()
+        self.btn_attach.config(state=tk.DISABLED)
+        self.history = self._messages_for_llm()
     
-       # Lanzar IA
-       threading.Thread(
-           target=self._orchestrate_ai_workflow,
-           daemon=True
-       ).start()
+        # ✅ PASAR run_id
+        threading.Thread(
+            target=self._orchestrate_ai_workflow,
+            args=(run_id,),
+            daemon=True
+        ).start()
+
 
     def _process_last_sent_attachments(self):
         if not self.last_sent_attachments:
@@ -1246,59 +1364,68 @@ class FinancialAssistantApp:
             return "\n".join(image_lines)
         return ""
 
-    def _orchestrate_ai_workflow(self):
+    def _orchestrate_ai_workflow(self, run_id):
         try:
+            # ⛔ Si ya no es el run activo → salir
+            if run_id != self.current_run_id:
+                return
+
             max_attempts = 6
             attempt = 0
+
             attachment_context = self._process_last_sent_attachments()
             if attachment_context:
-                self.history.append({"role": "user", "content": "Contexto de imágenes adjuntas:\n" + attachment_context})
+                self.history.append({
+                    "role": "user",
+                    "content": "Contexto de imágenes adjuntas:\n" + attachment_context
+                })
 
-            ai_reply = self._stream_ollama_call()
+            ai_reply = self._stream_ollama_call(run_id=run_id)
+
+            # ⛔ Si se canceló o quedó viejo → salir
+            if self.cancel_event.is_set() or run_id != self.current_run_id:
+                return
+
             if ai_reply.strip():
                 self.memory.append_message("assistant", ai_reply)
                 self.history = self._messages_for_llm()
 
+            # (opcional) puedes dejar el loop de código igual,
+            # pero SIEMPRE agrega este check en cada iteración:
+
             while attempt < max_attempts:
+
+                if self.cancel_event.is_set() or run_id != self.current_run_id:
+                    return
+
                 code_blocks = re.findall(r"```python(.*?)```", ai_reply, re.DOTALL | re.IGNORECASE)
                 if not code_blocks:
                     break
+
                 success = True
                 output = ""
                 fig = None
+
                 for code_block in code_blocks:
-                    self.root.after(0, lambda a=attempt: self.append_to_chat("Sistema", f"⚙️ Ejecutando código (Intento {a + 1}/{max_attempts})...", persist=True, role="system"))
+
+                    if self.cancel_event.is_set() or run_id != self.current_run_id:
+                        return
+
                     success, output, fig = self._run_python_sandbox(code_block.strip())
-                    if fig:
-                        self.root.after(0, lambda f=fig: self._show_figure(f))
-                    if output.strip():
-                        self.root.after(0, lambda o=output: self.append_to_chat("Consola Python", o, persist=True, role="python"))
+
                     if not success:
                         break
+
                 if success:
-                    prompt = f"El código se ejecutó bien. Salida:\n{output}\nExplica este resultado de forma ejecutiva sin escribir código."
-                    self.history.append({"role": "user", "content": prompt})
-                    final_reply = self._stream_ollama_call(is_feedback=True)
-                    if final_reply.strip():
-                        self.memory.append_message("assistant", final_reply)
-                    self.history = self._messages_for_llm()
                     break
+
                 attempt += 1
-                if attempt >= max_attempts:
-                    self.root.after(0, lambda: self.append_to_chat("Sistema", "⚠️ El código falló demasiadas veces. Intenta reformular tu pregunta.", persist=True, role="system"))
-                    break
-                prompt = f"El código falló con este error:\n{output}\nCorrige tu lógica y escribe ÚNICAMENTE el bloque de código Python corregido."
-                self.history.append({"role": "user", "content": prompt})
-                ai_reply = self._stream_ollama_call(is_feedback=True)
-                if ai_reply.strip():
-                    self.memory.append_message("assistant", ai_reply)
-                self.history = self._messages_for_llm()
+
         except Exception as e:
-            err_msg = str(e)
-            self.root.after(0, lambda m=err_msg: self.append_to_chat("Error", f"Error crítico en el flujo: {m}", persist=True, role="error"))
+            self.root.after(0, lambda: self.append_to_chat("Error", str(e), persist=True, role="error"))
+
         finally:
             self.root.after(0, self._release_ui)
-            self.root.after(0, self.refresh_recent_list)
 
     def _run_python_sandbox(self, code_string):
         if not self.dfs:
@@ -1327,54 +1454,110 @@ class FinancialAssistantApp:
             lines.append(f"- {n.get('text', '')}")
         return "\n".join(lines)
 
-    def _stream_ollama_call(self, is_feedback=False):
+    def _stream_ollama_call(self, is_feedback=False, run_id=None):
         messages = [{"role": "system", "content": self.system_prompt_text}]
+
         memory_context = self._build_memory_context()
         if memory_context:
             messages.append({"role": "system", "content": memory_context})
+
         if self.processors:
             ctx_msg = "Metadatos de los archivos cargados en esta sesión:\n"
             for i, p in enumerate(self.processors):
                 ctx_msg += f"\n--- ARCHIVO dfs[{i}]: {p.filename} ---\n{p.build_llm_context()}\n"
             messages.append({"role": "system", "content": ctx_msg})
-        messages.extend([m for m in self.history if m.get("role") in ("user", "assistant")])
+
+        messages.extend([
+            m for m in self.history
+            if m.get("role") in ("user", "assistant")
+        ])
 
         show_think = bool(self.show_thinking_var.get())
+
         think_text = ""
         ans_text = ""
+
+        # ✅ Limpiar thinking al iniciar
         if show_think and self.thinking_panel_visible:
             self.root.after(0, self.clear_thinking_panel)
-        self.root.after(0, lambda: self.set_thinking_status("Analizando..." if not is_feedback else "Concluyendo..."))
+
+        # Estado inicial
+        self.root.after(0, lambda: self.set_thinking_status(
+            "Analizando..." if not is_feedback else "Concluyendo..."
+        ))
+
         sender = "Gemma" if not is_feedback else "Gemma (Análisis)"
-        self.root.after(0, lambda s=sender: self._start_live_answer(sender=s))
+
+        if not self.cancel_event.is_set() and run_id == self.current_run_id:
+            self.root.after(0, lambda s=sender: self._start_live_answer(sender=s))
+
         try:
-            stream = ollama.chat(model=DEFAULT_MODEL, messages=messages, think=show_think, stream=True, options={"temperature": 0.1})
+            stream = ollama.chat(
+                model=DEFAULT_MODEL,
+                messages=messages,
+                think=show_think,
+                stream=True,
+                options={"temperature": 0.1}
+            )
+
             update_counter = 0
+
             for chunk in stream:
-                if self.cancel_event.is_set():
-                    break
+
+                # ------------------------------------------------
+                # ⛔ CANCELACIÓN / RUN INVÁLIDO (LO MÁS IMPORTANTE)
+                # ------------------------------------------------
+                if self.cancel_event.is_set() or run_id != self.current_run_id:
+                    self.root.after(0, lambda: self.set_thinking_status("Cancelado"))
+                    self.root.after(0, self.clear_thinking_panel)
+                    return ""
+
                 msg = get_chunk_message_dict(chunk)
+
+                # ------------------------------------------------
+                # THINKING (DEBUG PANEL)
+                # ------------------------------------------------
                 ch_think = msg.get("thinking", "")
                 if ch_think:
                     think_text += ch_think
+
                     if len(think_text) > 5000:
                         think_text = think_text[-5000:]
+
                     if show_think and self.thinking_panel_visible and update_counter % 8 == 0:
                         self.root.after(0, lambda t=think_text: self._update_live_thinking(t))
                         self.root.after(0, lambda: self.set_thinking_status("Thinking..."))
+
+                # ------------------------------------------------
+                # RESPUESTA PRINCIPAL
+                # ------------------------------------------------
                 ch_content = msg.get("content", "")
+
                 if ch_content and ch_content != self.last_chunk:
                     self.last_chunk = ch_content
                     ans_text += ch_content
+
+                    # ✅ SIGUE SIENDO el run válido
                     self.root.after(0, lambda t=ch_content: self._append_live_answer(t))
+
                 update_counter += 1
+
         except Exception as e:
-            err_ans = f"[Error: {e}]"
-            ans_text += err_ans
-            self.root.after(0, lambda m=err_ans: self._append_live_answer(m))
-        self.root.after(0, lambda: self.set_thinking_status("Completado"))
-        self.root.after(0, self._finish_live_answer)
+            # ❗ Solo escribir error si NO fue cancelado
+            if not self.cancel_event.is_set() and run_id == self.current_run_id:
+                err_ans = f"[Error: {e}]"
+                ans_text += err_ans
+                self.root.after(0, lambda m=err_ans: self._append_live_answer(m))
+
+        # ------------------------------------------------
+        # ✅ FINAL NORMAL (SOLO si sigue siendo válido)
+        # ------------------------------------------------
+        if not self.cancel_event.is_set() and run_id == self.current_run_id:
+            self.root.after(0, lambda: self.set_thinking_status("Completado"))
+            self.root.after(0, self._finish_live_answer)
+
         return ans_text
+
 
     def _show_figure(self, fig):
         win = tk.Toplevel(self.root)

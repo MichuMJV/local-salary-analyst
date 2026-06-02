@@ -601,15 +601,55 @@
       }
     ],
     "default_model": "gemma4:e4b",
-    "active_conversation_id": "b7fe2f0eac2244f5931707c3676ca20a",
+    "active_conversation_id": "0497acce42504d0f8bdcf40d53e8f5a0",
     "memory_notes": []
   },
   "conversations": {
-    "b7fe2f0eac2244f5931707c3676ca20a": {
-      "id": "b7fe2f0eac2244f5931707c3676ca20a",
+    "0497acce42504d0f8bdcf40d53e8f5a0": {
+      "id": "0497acce42504d0f8bdcf40d53e8f5a0",
+      "title": "ejemplo de attatchemtnet",
+      "created_at": "2026-06-02T10:13:57",
+      "updated_at": "2026-06-02T10:36:52",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hola puedes leer archivos pdf?",
+          "created_at": "2026-06-02T10:31:20"
+        },
+        {
+          "role": "assistant",
+          "content": "Como Científico de Datos y Analista Financiero, mi especialidad es el análisis de datos y la generación de código Python para resolver problemas financieros.\n\n**Respecto a tu pregunta:**\n\n**No, no tengo la capacidad de leer o procesar directamente archivos PDF ni imágenes.**\n\nMi entorno de trabajo está optimizado para analizar datos estructurados que provienen de formatos de texto y hojas de cálculo, como:\n\n*   **Excel (.xlsx)**\n*   **CSV (.csv)**\n*   **Texto plano (.txt)**\n*   **Word (.docx)**\n\n**¿Qué puedes hacer?**\n\nSi tienes información en un PDF que necesitas que analice, por favor, haz lo siguiente:\n\n1.  **Copia el texto o los datos** relevantes del PDF.\n2.  **Pégalo directamente** en nuestro chat.\n\nDe esta manera, podré procesar la información y comenzar con el análisis de datos, la limpieza, la transformación y la generación de modelos estadísticos o financieros que necesites.\n\nSi el análisis es muy complejo o requiere la lectura visual de tablas dentro de un PDF, te sugiero utilizar herramientas multimodales como **Microsoft Copilot** o Adobe Acrobat, ya que están diseñadas específicamente para esa tarea.\n\n**Estoy listo para recibir tus datos en formato de texto o tabla para empezar el análisis.**",
+          "created_at": "2026-06-02T10:33:47"
+        },
+        {
+          "role": "user",
+          "content": "haz un resumen de este documento que está pasando?\n\nAdjuntos enviados con este mensaje:",
+          "created_at": "2026-06-02T10:35:00",
+          "attachments": [
+            {
+              "id": "1c7c893163a44387a835f06a1f0d707f",
+              "path": "C:/Users/mjaramillov/OneDrive - Compañía Panameña de Aviación, S.A/Desktop/Carpeta personal Malony/Conflicto de Interes.docx",
+              "name": "Conflicto de Interes.docx",
+              "type": "unknown",
+              "loaded": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": "Lamento informarte que, aunque veo que has adjuntado un documento, **no puedo acceder ni leer el contenido de archivos adjuntos en este momento.**\n\nComo Científico de Datos y Analista Financiero, mi capacidad de procesamiento se limita a los datos que se me proporcionan directamente en formato de texto o código. **No puedo abrir ni analizar archivos PDF, imágenes, ni documentos binarios.**\n\n**Para que pueda ayudarte con el resumen, por favor haz lo siguiente:**\n\n1.  **Abre el documento adjunto.**\n2.  **Copia todo el texto** que deseas que resuma.\n3.  **Pégalo directamente** en nuestro chat.\n\nUna vez que el texto esté pegado, con gusto realizaré un resumen ejecutivo, identificaré los puntos clave, y si es necesario, extraeré datos estructurados para un análisis financiero o estadístico.\n\n**¡Estoy listo para analizar el texto cuando lo pegues!**",
+          "created_at": "2026-06-02T10:36:52"
+        }
+      ],
+      "pinned": false,
+      "summary": "",
+      "dataset_signatures": []
+    },
+    "4e1a73fa885c4824a81fd932c8617d49": {
+      "id": "4e1a73fa885c4824a81fd932c8617d49",
       "title": "Nueva conversación",
-      "created_at": "2026-06-01T15:37:51",
-      "updated_at": "2026-06-01T15:37:51",
+      "created_at": "2026-06-02T10:31:06",
+      "updated_at": "2026-06-02T10:31:06",
       "messages": [],
       "pinned": false,
       "summary": "",
