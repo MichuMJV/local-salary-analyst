@@ -24,6 +24,8 @@ try:
     import plotly  # Reservado para futuras mejoras interactivas.
 except Exception:
     plotly = None
+    
+from docx import Document  # Para lectura de archivos Word DOCX.
 
 # --- FIX DE MATPLOTLIB ---
 import matplotlib
@@ -54,6 +56,10 @@ INPUT_MAX_HEIGHT = 260
 ATTACH_BAR_HEIGHT = 34
 DEBUG_PANEL_WIDTH = 360
 
+SUPPORTED_TEXT_EXTS = {".txt"}
+SUPPORTED_WORD_EXTS = {".docx"}
+SUPPORTED_CSV_EXTS = {".csv"}
+BLOCKED_EXTS = {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 SUPPORTED_EXCEL_EXTS = {".xlsx", ".xls"}
 SUPPORTED_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
@@ -78,6 +84,86 @@ COLORS = {
     "white": "#ffffff",
 }
 
+
+def build_reader_code(filepath, max_chars=8000):
+    ext = os.path.splitext(filepath)[1].lower()
+    safe_path = filepath.replace("\\", "\\\\")
+
+    if ext in [".xlsx", ".xls"]:
+        return f'''
+import pandas as pd
+
+filepath = r"{safe_path}"
+excel_file = pd.ExcelFile(filepath)
+print("Archivo Excel detectado.")
+print("Hojas disponibles:", excel_file.sheet_names)
+
+sheet = excel_file.sheet_names[0]
+df = pd.read_excel(filepath, sheet_name=sheet).fillna("")
+print("Hoja leída:", sheet)
+print("Filas:", len(df))
+print("Columnas:", list(df.columns))
+print("\\nMuestra de datos:")
+print(df.head(10).to_string(index=False))
+'''
+
+    if ext == ".csv":
+        return f'''
+import pandas as pd
+
+filepath = r"{safe_path}"
+df = pd.read_csv(filepath).fillna("")
+print("Archivo CSV detectado.")
+print("Filas:", len(df))
+print("Columnas:", list(df.columns))
+print("\\nMuestra de datos:")
+print(df.head(10).to_string(index=False))
+'''
+
+    if ext == ".txt":
+        return f'''
+filepath = r"{safe_path}"
+
+with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+    content = f.read()
+
+print("Archivo TXT detectado.")
+print("Caracteres extraídos:", len(content))
+print("\\nContenido extraído:")
+print(content[:{max_chars}])
+'''
+
+    if ext == ".docx":
+        return f'''
+from docx import Document
+
+filepath = r"{safe_path}"
+doc = Document(filepath)
+
+parts = []
+
+for p in doc.paragraphs:
+    text = p.text.strip()
+    if text:
+        parts.append(text)
+
+for table in doc.tables:
+    for row in table.rows:
+        cells = [cell.text.strip() for cell in row.cells]
+        if any(cells):
+            parts.append(" | ".join(cells))
+
+content = "\\n".join(parts)
+
+print("Archivo Word DOCX detectado.")
+print("Caracteres extraídos:", len(content))
+print("\\nContenido extraído:")
+print(content[:{max_chars}])
+'''
+
+    return '''
+print("Tipo de archivo no soportado para extracción automática.")
+'''
 # =========================================================
 # UTILIDADES
 # =========================================================    
@@ -128,10 +214,22 @@ def get_chunk_message_dict(chunk):
 
 def classify_attachment(filepath):
     ext = os.path.splitext(filepath)[1].lower()
+
     if ext in SUPPORTED_EXCEL_EXTS:
         return "excel"
-    if ext in SUPPORTED_IMAGE_EXTS:
-        return "image"
+
+    if ext in SUPPORTED_CSV_EXTS:
+        return "csv"
+
+    if ext in SUPPORTED_TEXT_EXTS:
+        return "text"
+
+    if ext in SUPPORTED_WORD_EXTS:
+        return "word"
+
+    if ext in BLOCKED_EXTS:
+        return "blocked"
+
     return "unknown"
 
 
@@ -541,8 +639,9 @@ class FinancialAssistantApp:
             "7. Si recibes salida de código ejecutado, explica el resultado en lenguaje ejecutivo sin volver a escribir código.\n"
             "8. Si hay imágenes o pdf adjuntos, explica que copilot puede realizar esa tarea, y que eres especificamente capaz solo de leer exceles y formatos de texto como word, excel, csv o txt"
             "9. Puedes resolver cualquier tipo de pregunta si no está relacionada con nada de lo anterior pero aclara que tu especialidad es análisis de datos y código Python para temas financieros"
-            "10. IMPORTANTE: No tienes capacidad de procesar directamente archivos PDF ni imágenes. Si el usuario proporciona una imagen o PDF, debes indicarle claramente que no puedes analizar ese tipo de archivo en este entorno y sugerirle utilizar Microsoft Copilot u otra herramienta multimodal para ese análisis. Nunca inventes contenido visual ni asumas lo que contiene una imagen o PDF."
-        )
+            "10. Si el usuario adjunta archivos, el sistema puede extraer contenido mediante Python y enviarlo como contexto textual. Usa únicamente el contenido extraído que recibas en el prompt. No inventes información que no aparezca en la extracción."
+            "11. Si el archivo es PDF o imagen, indica que este entorno no procesa ese formato y recomienda Microsoft Copilot para ese análisis."
+            )
         self.setup_ui()
         self.load_active_conversation_into_chat()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -555,6 +654,23 @@ class FinancialAssistantApp:
                 self.root.attributes("-zoomed", True)
             except Exception:
                 self.root.attributes("-fullscreen", True)
+                
+    def _run_reader_sandbox(self, code_string):
+        output_buffer = io.StringIO()
+    
+        env = {
+            "pd": pd,
+            "os": os,
+        }
+    
+        try:
+            with contextlib.redirect_stdout(output_buffer):
+                exec(code_string, env)
+    
+            return True, output_buffer.getvalue()
+    
+        except Exception as e:
+            return False, str(e)
 
     def setup_ui(self):
         self.main = tk.Frame(self.root, bg=COLORS["bg"])
@@ -722,44 +838,50 @@ class FinancialAssistantApp:
     # =========================================================
     def attach_files(self):
         filetypes = [
-            ("Archivos soportados", "*.xlsx *.xls *.png *.jpg *.jpeg *.webp *.bmp"),
+            ("Archivos soportados", "*.xlsx *.xls *.csv *.txt *.docx"),
             ("Excel", "*.xlsx *.xls"),
-            ("Imágenes", "*.png *.jpg *.jpeg *.webp *.bmp"),
+            ("CSV", "*.csv"),
+            ("Texto", "*.txt"),
+            ("Word", "*.docx"),
             ("Todos", "*.*"),
         ]
-        paths = filedialog.askopenfilenames(title="Adjuntar archivos", filetypes=filetypes)
+
+        paths = filedialog.askopenfilenames(
+            title="Adjuntar archivos",
+            filetypes=filetypes
+        )
+
         for path in paths:
             self._add_attachment(path)
+
         self._refresh_attachments_bar()
         self._auto_resize_input_box()
 
     def _add_attachment(self, filepath):
         if not filepath or not os.path.exists(filepath):
             return
+
         kind = classify_attachment(filepath)
-        
-        # ❌ BLOQUEAR IMÁGENES Y PDF (aunque pdf no estaba explícito antes)
-        if kind in ["image"]:
+
+        if kind == "blocked":
             self.append_to_chat(
                 "Sistema",
-                "⚠️ Este asistente no puede analizar imágenes. Usa Microsoft Copilot para ese tipo de archivos.",
+                "⚠️ Este asistente no procesa imágenes ni PDF. Para ese tipo de archivos usa Microsoft Copilot.",
                 persist=False
             )
             return
-        
-        # (opcional) bloquear PDFs directamente por extensión
-        ext = os.path.splitext(filepath)[1].lower()
-        if ext == ".pdf":
+
+        if kind == "unknown":
             self.append_to_chat(
                 "Sistema",
-                "⚠️ Este asistente no puede analizar archivos PDF. Usa Microsoft Copilot para ese tipo de análisis.",
+                f"⚠️ Tipo de archivo no soportado: {os.path.basename(filepath)}",
                 persist=False
             )
             return
-        
-        # Evitar duplicados exactos pendientes.
+
         if any(a.get("path") == filepath for a in self.pending_attachments):
             return
+
         meta = {
             "id": uuid.uuid4().hex,
             "path": filepath,
@@ -767,8 +889,7 @@ class FinancialAssistantApp:
             "type": kind,
             "loaded": False,
         }
-        if kind == "image":
-            meta.update(self._image_metadata(filepath))
+
         self.pending_attachments.append(meta)
 
     def _image_metadata(self, filepath):
@@ -1344,25 +1465,84 @@ class FinancialAssistantApp:
             daemon=True
         ).start()
 
-
     def _process_last_sent_attachments(self):
         if not self.last_sent_attachments:
             return ""
-        image_lines = []
+
+        context_blocks = []
+
         for att in self.last_sent_attachments:
-            if att.get("type") == "excel":
-                self.root.after(0, lambda n=att["name"]: self.append_to_chat("Sistema", f"📎 Procesando Excel adjunto: {n}", persist=True, role="system"))
-                self._load_excel_from_path_blocking(att["path"])
-            elif att.get("type") == "image":
-                dim = ""
-                if att.get("width") and att.get("height"):
-                    dim = f" Dimensiones: {att['width']}x{att['height']}."
-                fmt = f" Formato: {att.get('format')}." if att.get("format") else ""
-                image_lines.append(f"Imagen adjunta: {att['name']} | Ruta local: {att['path']}.{dim}{fmt}")
+            filepath = att.get("path")
+            filename = att.get("name", os.path.basename(filepath))
+            kind = att.get("type")
+
+            if not filepath or not os.path.exists(filepath):
+                context_blocks.append(
+                    f"Archivo no encontrado: {filename}"
+                )
+                continue
+
+            # Excel se mantiene en tu flujo actual, porque además carga DataFrame
+            if kind == "excel":
+                self.root.after(
+                    0,
+                    lambda n=filename: self.append_to_chat(
+                        "Sistema",
+                        f"📎 Procesando Excel adjunto: {n}",
+                        persist=True,
+                        role="system"
+                    )
+                )
+
+                processor = self._load_excel_from_path_blocking(filepath)
+
+                # Además de cargarlo como DataFrame, extraemos muestra para contexto inmediato
+                code = build_reader_code(filepath)
+                success, output = self._run_reader_sandbox(code)
+
+                if success:
+                    context_blocks.append(
+                        f"Archivo Excel procesado: {filename}\n\n{output}"
+                    )
+                else:
+                    context_blocks.append(
+                        f"Error extrayendo Excel {filename}:\n{output}"
+                    )
+
+            elif kind in ("csv", "text", "word"):
+                self.root.after(
+                    0,
+                    lambda n=filename: self.append_to_chat(
+                        "Sistema",
+                        f"📎 Extrayendo contenido del archivo: {n}",
+                        persist=False
+                    )
+                )
+
+                code = build_reader_code(filepath)
+                success, output = self._run_reader_sandbox(code)
+
+                if success:
+                    context_blocks.append(
+                        f"Archivo procesado: {filename}\nTipo: {kind}\n\nContenido extraído por Python:\n{output}"
+                    )
+                else:
+                    context_blocks.append(
+                        f"Error procesando {filename}:\n{output}"
+                    )
+
+            else:
+                context_blocks.append(
+                    f"Archivo omitido: {filename}. Tipo no soportado para lectura automática."
+                )
+
         self.last_sent_attachments = []
-        if image_lines:
-            return "\n".join(image_lines)
-        return ""
+
+        if not context_blocks:
+            return ""
+
+        return "\n\n---\n\n".join(context_blocks)
+
 
     def _orchestrate_ai_workflow(self, run_id):
         try:
