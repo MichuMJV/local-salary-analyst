@@ -42,11 +42,12 @@ APP_TITLE = "COPA AI - Python Code Interpreter"
 APP_GEOMETRY = "1380x820"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MEMORY_FILE = os.path.join(BASE_DIR, "financial_assistant_memory.json")
-DEFAULT_MODEL = "gemma4:e4b"
-MAX_CHAT_HISTORY = 14
-MAX_SAMPLE_ROWS = 10
+DEFAULT_MODEL = "gemma4:e2b"
+#modelos disponibles: gemma4:e2b,gemma4:e4b,gemma:31b
+MAX_CHAT_HISTORY = 300
+MAX_SAMPLE_ROWS = 15
 MAX_CONVERSATION_MESSAGES = 300
-MAX_RECENT_CONVERSATIONS = 80
+MAX_RECENT_CONVERSATIONS = 80000
 
 INPUT_FONT = ("Segoe UI", 12)
 INPUT_MIN_LINES = 3
@@ -173,7 +174,6 @@ def normalize_text(value):
     value = str(value).strip().lower()
     value = unicodedata.normalize("NFKD", value)
     return "".join(ch for ch in value if not unicodedata.combining(ch))
-
 
 def safe_now_iso():
     return datetime.now().isoformat(timespec="seconds")
@@ -635,12 +635,66 @@ class FinancialAssistantApp:
             "3. Incluye `print()` con resultados intermedios relevantes para auditoría en la consola para que luego sean revisados por ti en siguientes codigos.\n"
             "4. Para preguntas analíticas con datos cargados, genera un bloque de código Python usando pandas/matplotlib.\n"
             "5. El código debe estar estrictamente dentro de un bloque ```python y ```.\n"
-            "6. Usa `plt.show()` para gráficos. o en su lugar si es un grafico muy completo o con varias capas usa la librería plotly de manera interactiva o para dashboards\n"
+            "6. Usa `plt.show()` para gráficos. o en su lugar si es un grafico muy complejo o con varias capas usa la librería plotly de manera interactiva o para dashboards\n"
             "7. Si recibes salida de código ejecutado, explica el resultado en lenguaje ejecutivo sin volver a escribir código.\n"
             "8. Si hay imágenes o pdf adjuntos, explica que copilot puede realizar esa tarea, y que eres especificamente capaz solo de leer exceles y formatos de texto como word, excel, csv o txt"
             "9. Puedes resolver cualquier tipo de pregunta si no está relacionada con nada de lo anterior pero aclara que tu especialidad es análisis de datos y código Python para temas financieros"
             "10. Si el usuario adjunta archivos, el sistema puede extraer contenido mediante Python y enviarlo como contexto textual. Usa únicamente el contenido extraído que recibas en el prompt. No inventes información que no aparezca en la extracción."
             "11. Si el archivo es PDF o imagen, indica que este entorno no procesa ese formato y recomienda Microsoft Copilot para ese análisis."
+            "REGLAS OBLIGATORIAS PARA CÓDIGO PYTHON:"
+
+                "1. Siempre debes generar código Python ejecutable."
+                
+                "2. Si hay un archivo adjunto, NO inventes rutas ni nombres de archivo."
+                "   Usa exactamente la variable filepath proporcionada por COPA AI."
+                "   Ejemplo obligatorio:"
+                "   filepath = r""RUTA_REAL_DEL_ARCHIVO"
+                
+                "3. Para leer archivos:"
+                "   - Excel: usa pd.ExcelFile(filepath) y pd.read_excel(filepath, sheet_name=...)"
+                "   - CSV: usa pd.read_csv(filepath)"
+                "   - TXT: usa open(filepath, encoding=""utf-8"", errors=""ignore"")"
+                "   - DOCX: usa Document(filepath)"
+                
+                "4. Siempre imprime resultados importantes con print()."
+                "   Debes imprimir:"
+                "   - archivo leído;"
+                "   - hoja usada si es Excel;"
+                "   - cantidad de filas y columnas si aplica;"
+                "   - columnas disponibles si aplica;"
+                "   - resumen del análisis realizado;"
+                "   - confirmación de cada gráfica generada."
+                
+                "5. Para Matplotlib:"
+                "   - Usa matplotlib.pyplot como plt."
+                "   - Crea figuras con fig, ax = plt.subplots(...)."
+                "   - No uses plt.close()."
+                "   - No dependas de plt.show()."
+                "   - Deja las figuras abiertas para que COPA AI las capture y las muestre en la interfaz."
+                
+                "6. Para Plotly:"
+                "   - Puedes usar plotly.express o plotly.graph_objects."
+                "   - No dependas únicamente de fig.show()."
+                "   - Guarda cada figura Plotly como archivo HTML local."
+                "   - Abre el HTML en el navegador usando webbrowser.open()."
+                "   - Imprime en consola la ruta del HTML generado."
+                "   - Usa nombres de archivo claros, por ejemplo:"
+                "     plotly_output_1.html, plotly_output_2.html."
+                
+                "7. Si generas varias gráficas, imprime un mensaje después de cada una."
+                
+                "8. El código debe ser autocontenido y ejecutable por COPA AI."
+                
+                "Cuando uses Plotly, cada figura debe guardarse y abrirse así:"
+
+                "html_path = os.path.abspath(""plotly_output_1.html"")"
+                "fig.write_html(html_path, include_plotlyjs=""cdn"", auto_open=False)"
+
+                "import webbrowser"
+                "webbrowser.open(""file://"" + html_path)"
+
+                "print(""Gráfica Plotly guardada y abierta en navegador:"", html_path)"
+
             )
         self.setup_ui()
         self.load_active_conversation_into_chat()
@@ -692,7 +746,7 @@ class FinancialAssistantApp:
     def _setup_sidebar(self):
         brand = tk.Frame(self.sidebar, bg=COLORS["sidebar"])
         brand.pack(fill=tk.X, padx=12, pady=(12, 8))
-        tk.Label(brand, text="✦ COPA AI", fg=COLORS["text"], bg=COLORS["sidebar"],
+        tk.Label(brand, text="COPA AI", fg=COLORS["text"], bg=COLORS["sidebar"],
                  font=("Segoe UI", 13, "bold")).pack(side=tk.LEFT)
         tk.Label(brand, text="local", fg=COLORS["muted"], bg=COLORS["sidebar"],
                  font=("Segoe UI", 9)).pack(side=tk.RIGHT)
@@ -1141,7 +1195,7 @@ class FinancialAssistantApp:
         self.lbl_chat_title.config(text=conv.get("title", "Nueva conversación"))
         messages = conv.get("messages", [])
         if not messages:
-            self.append_to_chat("Sistema", "📊 Asistente de Finanzas iniciado. Puedes adjuntar Excel o imágenes desde el botón ＋ del cuadro inferior.", persist=False)
+            self.append_to_chat("Sistema", "📊 Asistente analitico iniciado. Puedes adjuntar Excel, Docx, CSV o Txt desde el botón ＋ del cuadro inferior cada vez que vuelvas a entrar a la herramienta. ", persist=False)
             return
         role_to_sender = {"user": "Tú", "assistant": "Gemma", "system": "Sistema", "python": "Consola Python", "error": "Error"}
         for msg in messages[-80:]:
@@ -1608,22 +1662,131 @@ class FinancialAssistantApp:
             self.root.after(0, self._release_ui)
 
     def _run_python_sandbox(self, code_string):
-        if not self.dfs:
-            return False, "Error: No hay ningún DataFrame cargado.", None
+        import traceback
+        import webbrowser
+        import os
+    
         output_buffer = io.StringIO()
-        plt.clf()
+        error_buffer = io.StringIO()
+    
+        # Buscar ruta del archivo si existe en la app.
+        # Ajusta estos nombres si tu variable real se llama diferente.
+        filepath = (
+            getattr(self, "filepath", None)
+            or getattr(self, "current_filepath", None)
+            or getattr(self, "attached_filepath", None)
+            or getattr(self, "selected_filepath", None)
+            or None
+        )
+    
+        # Si no hay ni DataFrame ni filepath, entonces sí se bloquea.
+        if not getattr(self, "dfs", None) and not filepath:
+            return False, "Error: No hay ningún DataFrame cargado ni ruta de archivo disponible.", None
+    
+        # Limpiar figuras anteriores
+        try:
+            plt.close("all")
+        except Exception:
+            pass
+        
         custom_show = {"called": False}
+    
+        # Guardar show original para restaurarlo después
+        original_plt_show = plt.show
+    
         def mock_show(*args, **kwargs):
             custom_show["called"] = True
-        env = {"dfs": self.dfs, "df": self.dfs[-1], "pd": pd, "plt": plt}
-        env["plt"].show = mock_show
+            # No abrir ventana de Matplotlib; COPA AI captura la figura y la muestra en Tkinter.
+            return None
+    
+        # Intentar configurar Plotly para navegador
         try:
-            with contextlib.redirect_stdout(output_buffer):
-                exec(code_string, env)
-            fig = plt.gcf() if (custom_show["called"] or plt.gcf().get_axes()) else None
-            return True, output_buffer.getvalue(), fig
-        except Exception as e:
-            return False, str(e), None
+            import plotly.io as pio
+            pio.renderers.default = "browser"
+        except Exception:
+            pio = None
+    
+        # DataFrame principal si existe
+        dfs = getattr(self, "dfs", []) or []
+        df = dfs[-1] if dfs else None
+    
+        env = {
+            "__name__": "__main__",
+            "dfs": dfs,
+            "df": df,
+            "pd": pd,
+            "plt": plt,
+            "os": os,
+            "webbrowser": webbrowser,
+            "filepath": filepath,
+        }
+    
+        if pio is not None:
+            env["pio"] = pio
+    
+        # Reemplazar plt.show solo durante esta ejecución
+        plt.show = mock_show
+    
+        try:
+            # Parche suave para Plotly:
+            # Si Gemma usa fig.show(), Plotly intentará abrir en navegador.
+            plotly_patch = """
+    try:
+        import plotly.io as pio
+        pio.renderers.default = "browser"
+    except Exception:
+        pass
+    """
+    
+            final_code = plotly_patch + "\n" + code_string
+    
+            with contextlib.redirect_stdout(output_buffer), contextlib.redirect_stderr(error_buffer):
+                exec(final_code, env)
+    
+            stdout_text = output_buffer.getvalue()
+            stderr_text = error_buffer.getvalue()
+    
+            full_output = stdout_text
+    
+            if stderr_text.strip():
+                full_output += "\n\nSTDERR:\n" + stderr_text
+    
+            # Capturar figura Matplotlib si existe
+            fig = None
+            try:
+                fig_nums = plt.get_fignums()
+                if fig_nums:
+                    fig = plt.figure(fig_nums[-1])
+                elif custom_show["called"] or plt.gcf().get_axes():
+                    fig = plt.gcf()
+            except Exception:
+                fig = None
+    
+            if not full_output.strip():
+                full_output = "Código ejecutado correctamente, pero no produjo salida de consola."
+    
+            return True, full_output, fig
+    
+        except Exception:
+            stdout_text = output_buffer.getvalue()
+            stderr_text = error_buffer.getvalue()
+            traceback_text = traceback.format_exc()
+    
+            full_error = ""
+    
+            if stdout_text.strip():
+                full_error += "Salida antes del error:\n" + stdout_text + "\n\n"
+    
+            if stderr_text.strip():
+                full_error += "STDERR:\n" + stderr_text + "\n\n"
+    
+            full_error += "Error ejecutando código:\n" + traceback_text
+    
+            return False, full_error, None
+    
+        finally:
+            # Muy importante: restaurar plt.show
+            plt.show = original_plt_show
 
     def _build_memory_context(self):
         notes = self.memory.get_memory_notes()
